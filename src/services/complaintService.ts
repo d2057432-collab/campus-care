@@ -44,6 +44,48 @@ export function generateComplaintId(): string {
   return `${prefix}-${random}`;
 }
 
+// Deeply sanitize objects/arrays to remove undefined fields before writing to Firestore
+export function sanitizeForFirestore<T>(obj: T): T {
+  if (obj === null || obj === undefined || typeof obj !== 'object') {
+    return obj;
+  }
+  if (Array.isArray(obj)) {
+    return obj
+      .filter((item) => item !== undefined)
+      .map((item) => sanitizeForFirestore(item)) as unknown as T;
+  }
+  const result: Record<string, any> = {};
+  for (const [key, value] of Object.entries(obj as Record<string, any>)) {
+    if (value !== undefined) {
+      result[key] = sanitizeForFirestore(value);
+    }
+  }
+  return result as T;
+}
+
+const LOCAL_COMPLAINTS_KEY = 'kitsw_complaints_store';
+const complaintListeners = new Set<() => void>();
+
+export function getLocalComplaints(): Complaint[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_COMPLAINTS_KEY);
+    return raw ? (JSON.parse(raw) as Complaint[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveLocalComplaint(complaint: Complaint): void {
+  try {
+    const existing = getLocalComplaints();
+    const updated = [complaint, ...existing.filter((c) => c.id !== complaint.id)];
+    localStorage.setItem(LOCAL_COMPLAINTS_KEY, JSON.stringify(updated));
+    complaintListeners.forEach((fn) => fn());
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
 // 1. Create Complaint
 export async function createComplaint(
   data: Omit<Complaint, 'id' | 'complaintId' | 'status' | 'timeline' | 'slaHours' | 'dueDate' | 'isOverdue' | 'escalationLevel' | 'createdAt' | 'updatedAt'>
@@ -55,7 +97,7 @@ export async function createComplaint(
   const slaHours = SLA_HOURS_MAP[priority] || 48;
   const dueDate = calculateDueDate(priority);
 
-  const initialTimeline: TimelineEvent = {
+  const initialTimeline: TimelineEvent = sanitizeForFirestore({
     id: `tl-${Date.now()}`,
     status: 'SUBMITTED',
     changedBy: data.studentId,
@@ -63,9 +105,10 @@ export async function createComplaint(
     changedByRole: 'STUDENT',
     timestamp: now,
     comment: 'Complaint raised by student.',
-  };
+    proofImageUrl: data.proofImageUrl,
+  });
 
-  const newComplaint: Complaint = {
+  const newComplaint: Complaint = sanitizeForFirestore({
     ...data,
     id: docRef.id,
     complaintId,
@@ -78,13 +121,15 @@ export async function createComplaint(
     timeline: [initialTimeline],
     createdAt: now,
     updatedAt: now,
-  };
+  });
+
+  saveLocalComplaint(newComplaint);
 
   if (auth.currentUser) {
     try {
-      await setDoc(docRef, newComplaint);
+      await setDoc(docRef, sanitizeForFirestore(newComplaint));
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, `complaints/${docRef.id}`);
+      safeLogFirestoreError(error, OperationType.CREATE, `complaints/${docRef.id}`);
     }
 
     // Create audit log
@@ -104,7 +149,7 @@ export async function createComplaint(
       userId: data.studentId,
       userEmail: data.studentEmail,
       title: `Complaint Submitted (${complaintId})`,
-      message: `Your complaint "${data.title}" was submitted successfully. Expected resolution within ${slaHours} hours.`,
+      message: `Your complaint "${data.title}" was submitted successfully. Expected resolution within ${data.estimatedResolutionTime || `${slaHours} hours`}.`,
       type: 'SUBMITTED',
       complaintId,
       newStatus: 'SUBMITTED',
@@ -114,7 +159,7 @@ export async function createComplaint(
       userId: data.studentId,
       userEmail: data.studentEmail,
       title: `Complaint Submitted (${complaintId})`,
-      message: `Your complaint "${data.title}" was submitted successfully. Expected resolution within ${slaHours} hours.`,
+      message: `Your complaint "${data.title}" was submitted successfully. Expected resolution within ${data.estimatedResolutionTime || `${slaHours} hours`}.`,
       type: 'SUBMITTED',
       complaintId,
       newStatus: 'SUBMITTED',
@@ -135,12 +180,13 @@ export async function updateComplaintStatus(
     resolutionProofUrls?: string[];
     assignedStaffId?: string;
     assignedStaffName?: string;
+    proofImageUrl?: string;
   }
 ): Promise<void> {
   const docRef = doc(db, 'complaints', complaint.id);
   const now = new Date().toISOString();
 
-  const newTimelineEvent: TimelineEvent = {
+  const newTimelineEvent: TimelineEvent = sanitizeForFirestore({
     id: `tl-${Date.now()}`,
     status: newStatus,
     changedBy: user.uid,
@@ -148,7 +194,8 @@ export async function updateComplaintStatus(
     changedByRole: user.role,
     timestamp: now,
     comment: options?.comment || `Status updated to ${newStatus.replace('_', ' ')}.`,
-  };
+    proofImageUrl: options?.proofImageUrl || options?.resolutionProofUrls?.[0],
+  });
 
   const updateData: Partial<Complaint> = {
     status: newStatus,
@@ -159,7 +206,11 @@ export async function updateComplaintStatus(
   if (newStatus === 'RESOLVED') {
     updateData.resolvedAt = now;
     if (options?.resolutionNote) updateData.resolutionNote = options.resolutionNote;
-    if (options?.resolutionProofUrls) updateData.resolutionProofUrls = options.resolutionProofUrls;
+    if (options?.resolutionProofUrls && options.resolutionProofUrls.length > 0) {
+      updateData.resolutionProofUrls = options.resolutionProofUrls;
+    } else if (options?.proofImageUrl) {
+      updateData.resolutionProofUrls = [options.proofImageUrl];
+    }
   }
 
   if (options?.assignedStaffId) {
@@ -171,9 +222,14 @@ export async function updateComplaintStatus(
     updateData.escalationLevel = (complaint.escalationLevel || 0) + 1;
   }
 
+  const sanitizedUpdate = sanitizeForFirestore(updateData);
+
+  // Sync local complaint cache
+  saveLocalComplaint({ ...complaint, ...sanitizedUpdate });
+
   if (auth.currentUser) {
     try {
-      await updateDoc(docRef, updateData);
+      await updateDoc(docRef, sanitizedUpdate);
     } catch (error) {
       safeLogFirestoreError(error, OperationType.UPDATE, `complaints/${complaint.id}`);
     }
@@ -203,29 +259,93 @@ export async function updateComplaintStatus(
   }).catch(() => {});
 }
 
-// 3. Submit Feedback
+// 3. Submit Feedback (Auto-Escalates if rated 1 or 2 stars)
 export async function submitComplaintFeedback(
-  complaintId: string,
+  complaint: Complaint,
   rating: number,
-  comment?: string
-): Promise<void> {
-  const docRef = doc(db, 'complaints', complaintId);
+  comment?: string,
+  studentUser?: { uid: string; displayName: string }
+): Promise<{ escalated: boolean; updatedComplaint: Complaint }> {
+  const docRef = doc(db, 'complaints', complaint.id);
   const now = new Date().toISOString();
+  const isLowRating = rating <= 2;
+
+  const feedbackObj = sanitizeForFirestore({
+    rating,
+    comment: comment || '',
+    submittedAt: now,
+    escalatedByFeedback: isLowRating,
+  });
+
+  const timelineEvents = [...(complaint.timeline || [])];
+  if (isLowRating) {
+    timelineEvents.push(
+      sanitizeForFirestore({
+        id: `tl-${Date.now()}`,
+        status: 'ESCALATED' as ComplaintStatus,
+        changedBy: studentUser?.uid || complaint.studentId,
+        changedByName: studentUser?.displayName || complaint.studentName,
+        changedByRole: 'STUDENT' as UserRole,
+        timestamp: now,
+        comment: `Automatically reopened & flagged as ESCALATED due to low student resolution rating (${rating}/5 stars).${comment ? ` Student feedback: "${comment}"` : ''}`,
+      })
+    );
+  }
+
+  const updateFields: Partial<Complaint> = sanitizeForFirestore({
+    feedback: feedbackObj,
+    updatedAt: now,
+    ...(isLowRating
+      ? {
+          status: 'ESCALATED' as ComplaintStatus,
+          escalationLevel: Math.max((complaint.escalationLevel || 0) + 1, 2),
+          isOverdue: true,
+          timeline: timelineEvents,
+        }
+      : {}),
+  });
+
+  const updatedComplaint: Complaint = {
+    ...complaint,
+    ...updateFields,
+  };
+
+  saveLocalComplaint(updatedComplaint);
 
   if (auth.currentUser) {
     try {
-      await updateDoc(docRef, {
-        feedback: {
-          rating,
-          comment: comment || '',
-          submittedAt: now,
-        },
-        updatedAt: now,
-      });
+      await updateDoc(docRef, updateFields);
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `complaints/${complaintId}`);
+      safeLogFirestoreError(error, OperationType.UPDATE, `complaints/${complaint.id}`);
+    }
+
+    if (isLowRating) {
+      await createAuditLog({
+        actorId: studentUser?.uid || complaint.studentId,
+        actorName: studentUser?.displayName || complaint.studentName,
+        actorRole: 'STUDENT',
+        action: 'AUTO_ESCALATED_LOW_RATING',
+        targetId: complaint.complaintId,
+        targetType: 'COMPLAINT',
+        timestamp: now,
+        details: `Ticket ${complaint.complaintId} rated ${rating}/5 stars by student. Automatically reopened and escalated for Admin/HOD review.`,
+      }).catch(() => {});
     }
   }
+
+  if (isLowRating) {
+    await createNotification({
+      userId: complaint.studentId,
+      userEmail: complaint.studentEmail,
+      title: `Ticket Reopened & Escalated (${complaint.complaintId})`,
+      message: `Because you rated the resolution ${rating}/5 stars, your complaint "${complaint.title}" has been automatically reopened and flagged as ESCALATED for Admin and HOD review.`,
+      type: 'ESCALATED',
+      complaintId: complaint.complaintId,
+      newStatus: 'ESCALATED',
+    }).catch(() => {});
+  }
+
+  return { escalated: isLowRating, updatedComplaint };
 }
 
 // 4. Link Duplicate Complaint
@@ -266,6 +386,32 @@ export async function linkToMasterComplaint(
   }
 }
 
+const LOCAL_MESSAGES_KEY_PREFIX = 'kitsw_messages_';
+const messageListeners = new Map<string, Set<() => void>>();
+
+function getLocalMessages(complaintId: string): ComplaintMessage[] {
+  try {
+    const raw = localStorage.getItem(`${LOCAL_MESSAGES_KEY_PREFIX}${complaintId}`);
+    return raw ? (JSON.parse(raw) as ComplaintMessage[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalMessage(complaintId: string, msg: ComplaintMessage): void {
+  try {
+    const existing = getLocalMessages(complaintId);
+    const updated = [...existing.filter((m) => m.id !== msg.id), msg].sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    );
+    localStorage.setItem(`${LOCAL_MESSAGES_KEY_PREFIX}${complaintId}`, JSON.stringify(updated));
+    const set = messageListeners.get(complaintId);
+    if (set) set.forEach((fn) => fn());
+  } catch {
+    // Ignore storage error
+  }
+}
+
 // 5. Messages Subcollection
 export async function addComplaintMessage(
   complaintId: string,
@@ -275,24 +421,27 @@ export async function addComplaintMessage(
     senderRole: UserRole;
     message: string;
     isInternal: boolean;
+    attachments?: Array<{ id: string; name: string; url: string; type?: string }>;
   }
 ): Promise<ComplaintMessage> {
   const messagesCol = collection(db, 'complaints', complaintId, 'messages');
   const msgDoc = doc(messagesCol);
   const now = new Date().toISOString();
 
-  const newMsg: ComplaintMessage = {
+  const newMsg: ComplaintMessage = sanitizeForFirestore({
     id: msgDoc.id,
     complaintId,
     ...message,
     createdAt: now,
-  };
+  });
+
+  saveLocalMessage(complaintId, newMsg);
 
   if (auth.currentUser) {
     try {
-      await setDoc(msgDoc, newMsg);
+      await setDoc(msgDoc, sanitizeForFirestore(newMsg));
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, `complaints/${complaintId}/messages/${msgDoc.id}`);
+      safeLogFirestoreError(error, OperationType.CREATE, `complaints/${complaintId}/messages/${msgDoc.id}`);
     }
   }
 
@@ -304,28 +453,49 @@ export function subscribeToMessages(
   callback: (messages: ComplaintMessage[]) => void,
   userRole: UserRole
 ) {
-  if (!auth.currentUser) {
-    return () => {};
+  let firestoreMsgs: ComplaintMessage[] = [];
+
+  const emitMerged = () => {
+    const localMsgs = getLocalMessages(complaintId);
+    const map = new Map<string, ComplaintMessage>();
+    [...localMsgs, ...firestoreMsgs].forEach((m) => map.set(m.id, m));
+    const all = Array.from(map.values()).sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    );
+    if (userRole === 'STUDENT') {
+      callback(all.filter((m) => !m.isInternal));
+    } else {
+      callback(all);
+    }
+  };
+
+  emitMerged();
+  if (!messageListeners.has(complaintId)) {
+    messageListeners.set(complaintId, new Set());
+  }
+  messageListeners.get(complaintId)!.add(emitMerged);
+
+  let unsubFirestore = () => {};
+  if (auth.currentUser) {
+    const messagesCol = collection(db, 'complaints', complaintId, 'messages');
+    const q = query(messagesCol, orderBy('createdAt', 'asc'));
+
+    unsubFirestore = onSnapshot(
+      q,
+      (snapshot) => {
+        firestoreMsgs = snapshot.docs.map((d) => d.data() as ComplaintMessage);
+        emitMerged();
+      },
+      (err) => {
+        safeLogFirestoreError(err, OperationType.LIST, `complaints/${complaintId}/messages`);
+      }
+    );
   }
 
-  const messagesCol = collection(db, 'complaints', complaintId, 'messages');
-  const q = query(messagesCol, orderBy('createdAt', 'asc'));
-
-  return onSnapshot(
-    q,
-    (snapshot) => {
-      const msgs = snapshot.docs.map((d) => d.data() as ComplaintMessage);
-      // Students cannot see internal staff notes
-      if (userRole === 'STUDENT') {
-        callback(msgs.filter((m) => !m.isInternal));
-      } else {
-        callback(msgs);
-      }
-    },
-    (err) => {
-      safeLogFirestoreError(err, OperationType.LIST, `complaints/${complaintId}/messages`);
-    }
-  );
+  return () => {
+    messageListeners.get(complaintId)?.delete(emitMerged);
+    unsubFirestore();
+  };
 }
 
 // 6. Realtime Complaints Listener
@@ -333,27 +503,58 @@ export function subscribeToComplaints(
   callback: (complaints: Complaint[]) => void,
   filter?: { studentId?: string; departmentId?: string; role?: UserRole }
 ) {
-  if (!auth.currentUser) {
-    return () => {};
-  }
+  let firestoreItems: Complaint[] = [];
 
-  const colRef = collection(db, 'complaints');
-  let q = query(colRef, orderBy('createdAt', 'desc'));
-
-  if (filter?.role === 'STUDENT' && filter?.studentId) {
-    q = query(colRef, where('studentId', '==', filter.studentId), orderBy('createdAt', 'desc'));
-  }
-
-  return onSnapshot(
-    q,
-    (snapshot) => {
-      const items = snapshot.docs.map((d) => ({ ...d.data(), id: d.id } as Complaint));
-      callback(items);
-    },
-    (error) => {
-      safeLogFirestoreError(error, OperationType.LIST, 'complaints');
+  const emitMerged = () => {
+    const localItems = getLocalComplaints();
+    const map = new Map<string, Complaint>();
+    [...localItems, ...firestoreItems].forEach((c) => map.set(c.id, c));
+    let merged = Array.from(map.values()).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    if (filter?.role === 'STUDENT' && filter?.studentId) {
+      merged = merged.filter((c) => c.studentId === filter.studentId);
     }
-  );
+    callback(merged);
+  };
+
+  emitMerged();
+  complaintListeners.add(emitMerged);
+
+  let unsubFirestore = () => {};
+  if (auth.currentUser) {
+    const colRef = collection(db, 'complaints');
+    let q = query(colRef, orderBy('createdAt', 'desc'));
+
+    if (filter?.role === 'STUDENT' && filter?.studentId) {
+      q = query(colRef, where('studentId', '==', filter.studentId), orderBy('createdAt', 'desc'));
+    }
+
+    unsubFirestore = onSnapshot(
+      q,
+      (snapshot) => {
+        firestoreItems = snapshot.docs.map((d) => ({ ...d.data(), id: d.id } as Complaint));
+        firestoreItems.forEach((c) => {
+          try {
+            const existing = getLocalComplaints();
+            const updated = [c, ...existing.filter((x) => x.id !== c.id)];
+            localStorage.setItem(LOCAL_COMPLAINTS_KEY, JSON.stringify(updated));
+          } catch {
+            // Ignore
+          }
+        });
+        emitMerged();
+      },
+      (error) => {
+        safeLogFirestoreError(error, OperationType.LIST, 'complaints');
+      }
+    );
+  }
+
+  return () => {
+    complaintListeners.delete(emitMerged);
+    unsubFirestore();
+  };
 }
 
 const LOCAL_NOTIFS_KEY = 'kitsw_notifications_store';
@@ -386,12 +587,12 @@ export async function createNotification(
   const notifRef = doc(collection(db, 'notifications'));
   const now = new Date().toISOString();
 
-  const notif: Notification = {
+  const notif: Notification = sanitizeForFirestore({
     ...data,
     id: notifRef.id,
     isRead: false,
     createdAt: now,
-  };
+  });
 
   // Save locally & notify in-app listeners immediately
   saveLocalNotification(notif);
@@ -508,15 +709,15 @@ export async function markNotificationAsRead(notificationId: string): Promise<vo
 export async function createAuditLog(data: Omit<AuditLog, 'id'>): Promise<void> {
   if (!auth.currentUser) return;
   const logRef = doc(collection(db, 'auditLogs'));
-  const log: AuditLog = {
+  const log: AuditLog = sanitizeForFirestore({
     ...data,
     id: logRef.id,
-  };
+  });
 
   try {
     await setDoc(logRef, log);
   } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, `auditLogs/${logRef.id}`);
+    safeLogFirestoreError(error, OperationType.CREATE, `auditLogs/${logRef.id}`);
   }
 }
 

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { UserRole, Notification } from '../../types';
 import { subscribeToNotifications, markNotificationAsRead } from '../../services/complaintService';
+import { EditProfileModal } from '../modals/EditProfileModal';
 import {
   ShieldCheck,
   Bell,
@@ -22,6 +23,7 @@ import {
   LayoutDashboard,
   MapPin,
   Megaphone,
+  Settings,
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -48,6 +50,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [roleDropdownOpen, setRoleDropdownOpen] = useState(false);
   const [notifDropdownOpen, setNotifDropdownOpen] = useState(false);
+  const [showEditProfile, setShowEditProfile] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
 
   // Close mobile menu on resize to desktop or on Escape key
@@ -364,7 +367,17 @@ export const Navbar: React.FC<NavbarProps> = ({
                     </div>
                   </div>
 
-                  <div className="pt-2 px-3">
+                  <div className="pt-2 px-3 space-y-1.5">
+                    <button
+                      onClick={() => {
+                        setRoleDropdownOpen(false);
+                        setShowEditProfile(true);
+                      }}
+                      className="w-full py-2 px-3 rounded-xl text-xs font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50/70 dark:bg-indigo-950/50 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 flex items-center justify-center gap-2 transition-colors"
+                    >
+                      <Settings className="w-3.5 h-3.5" />
+                      <span>Edit Profile & Details</span>
+                    </button>
                     <button
                       onClick={() => {
                         logout();
@@ -607,7 +620,17 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
 
             {/* Sign Out Button on Mobile */}
-            <div className="pt-4 mt-auto border-t border-slate-100 dark:border-slate-800">
+            <div className="pt-4 mt-auto border-t border-slate-100 dark:border-slate-800 space-y-2">
+              <button
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  setShowEditProfile(true);
+                }}
+                className="w-full py-2.5 px-4 rounded-xl text-xs font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/40 hover:bg-indigo-100 dark:hover:bg-indigo-950/70 flex items-center justify-center gap-2 transition-colors"
+              >
+                <Settings className="w-4 h-4" />
+                <span>Edit Profile & Details</span>
+              </button>
               <button
                 onClick={() => {
                   logout();
@@ -622,6 +645,11 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
         </div>
       )}
+
+      <EditProfileModal
+        isOpen={showEditProfile}
+        onClose={() => setShowEditProfile(false)}
+      />
     </header>
   );
 };

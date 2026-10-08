@@ -28,12 +28,16 @@ export interface UserProfile {
 }
 
 export type ComplaintCategory =
+  | 'Electrical'
+  | 'Network/Wi-Fi'
+  | 'Hostel Maintenance'
+  | 'Civil'
+  | 'Academic'
   | 'Hostel'
   | 'Mess/Food'
   | 'Academics'
   | 'Faculty'
   | 'Infrastructure'
-  | 'Electrical'
   | 'Plumbing'
   | 'Cleanliness'
   | 'Security'
@@ -69,6 +73,7 @@ export interface TimelineEvent {
   changedByRole: UserRole | 'SYSTEM';
   timestamp: string;
   comment?: string;
+  proofImageUrl?: string;
 }
 
 export interface Attachment {
@@ -91,12 +96,15 @@ export interface AIAnalysis {
   possibleDuplicate: boolean;
   duplicateMatchId?: string;
   reasoning: string;
+  estimatedResolutionTime?: string;
+  suggestedTitle?: string;
 }
 
 export interface ComplaintFeedback {
   rating: number; // 1 to 5
   comment?: string;
   submittedAt: string;
+  escalatedByFeedback?: boolean;
 }
 
 export interface Complaint {
@@ -110,6 +118,9 @@ export interface Complaint {
   building?: string;
   block?: string;
   roomNumber?: string;
+  landmark?: string;
+  estimatedResolutionTime?: string;
+  proofImageUrl?: string;
   departmentId?: string;
   departmentName?: string;
   priority: ComplaintPriority;

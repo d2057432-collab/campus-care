@@ -185,6 +185,7 @@ interface AuthContextType {
   ) => Promise<void>;
   logout: () => Promise<void>;
   updateProfileRole: (newRole: UserRole, deptId?: string) => Promise<void>;
+  updateUserProfileDetails: (updates: Partial<UserProfile>) => Promise<UserProfile>;
   collegeDomain: string;
   isCollegeDomainEmail: (email: string) => boolean;
 }
@@ -983,6 +984,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const updateUserProfileDetails = async (updates: Partial<UserProfile>): Promise<UserProfile> => {
+    if (!userProfile) {
+      throw new Error('No active user profile found.');
+    }
+    const updated: UserProfile = sanitizeProfile({
+      ...userProfile,
+      ...updates,
+      uid: userProfile.uid,
+      email: userProfile.email,
+      role: updates.role || userProfile.role,
+      updatedAt: new Date().toISOString(),
+    });
+
+    saveProfileLocally(updated);
+    setUserProfile(updated);
+
+    if (currentUser) {
+      try {
+        if (updates.displayName && updates.displayName !== currentUser.displayName) {
+          await updateProfile(currentUser, { displayName: updates.displayName }).catch(() => {});
+        }
+        await withTimeout(
+          setDoc(doc(db, 'users', currentUser.uid), updated, { merge: true }),
+          3000
+        );
+      } catch (err) {
+        console.warn('Firestore profile update synced locally:', err);
+      }
+    }
+
+    return updated;
+  };
+
   return (
     <AuthContext.Provider
       value={{
@@ -1005,6 +1039,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         resetPasswordWithOtp,
         logout,
         updateProfileRole,
+        updateUserProfileDetails,
         collegeDomain: COLLEGE_DOMAIN,
         isCollegeDomainEmail,
       }}

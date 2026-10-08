@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { UserRole } from '../../types';
+import { KITSW_BRANCHES, KITSW_RESIDENCE_OPTIONS } from '../../services/demoDataService';
 import {
   ShieldCheck,
   GraduationCap,
@@ -61,8 +62,8 @@ export const AuthPage: React.FC = () => {
   const [rollNumber, setRollNumber] = useState('');
   const [yearOfStudy, setYearOfStudy] = useState('III Year B.Tech');
   const [section, setSection] = useState('Section A');
-  const [branch, setBranch] = useState('Computer Science & Engineering (CSE)');
-  const [hostel, setHostel] = useState('Boys Hostel-1 (BH-1 / Krishna Hostel)');
+  const [branch, setBranch] = useState(KITSW_BRANCHES[0]);
+  const [hostel, setHostel] = useState(KITSW_RESIDENCE_OPTIONS[0]);
   const [roomNumber, setRoomNumber] = useState('');
   const [phone, setPhone] = useState('');
   const [employeeId, setEmployeeId] = useState('');
@@ -854,46 +855,41 @@ export const AuthPage: React.FC = () => {
                     onChange={(e) => setBranch(e.target.value)}
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
                   >
-                    <option value="Computer Science & Engineering (CSE)">Computer Science & Engineering (CSE)</option>
-                    <option value="Computer Science & Engineering - AI & ML (CSM)">CSE - AI & Machine Learning (CSM)</option>
-                    <option value="Computer Science & Engineering - Data Science (CSD)">CSE - Data Science (CSD)</option>
-                    <option value="Information Technology (IT)">Information Technology (IT)</option>
-                    <option value="Electronics & Communication Engineering (ECE)">Electronics & Communication Engineering (ECE)</option>
-                    <option value="Electrical & Electronics Engineering (EEE)">Electrical & Electronics Engineering (EEE)</option>
-                    <option value="Mechanical Engineering (MECH)">Mechanical Engineering (MECH)</option>
-                    <option value="Civil Engineering (CIVIL)">Civil Engineering (CIVIL)</option>
-                    <option value="Electronics & Instrumentation Engineering (EIE)">Electronics & Instrumentation (EIE)</option>
+                    {KITSW_BRANCHES.map((b) => (
+                      <option key={b} value={b}>
+                        {b}
+                      </option>
+                    ))}
                   </select>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div className="sm:col-span-2">
                     <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                      Accommodation / Hostel
+                      Accommodation / Residence Type *
                     </label>
                     <select
                       value={hostel}
                       onChange={(e) => setHostel(e.target.value)}
                       className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
                     >
-                      <option value="Boys Hostel-1 (BH-1 / Krishna Hostel)">Boys Hostel-1 (BH-1 / Krishna Hostel)</option>
-                      <option value="Boys Hostel-2 (BH-2 / Godavari Hostel)">Boys Hostel-2 (BH-2 / Godavari Hostel)</option>
-                      <option value="Boys Hostel-3 (BH-3 / Kaveri Hostel)">Boys Hostel-3 (BH-3 / Kaveri Hostel)</option>
-                      <option value="Girls Hostel-1 (GH-1 / Priyadarshini Hostel)">Girls Hostel-1 (GH-1 / Priyadarshini Hostel)</option>
-                      <option value="Girls Hostel-2 (GH-2 / Sarojini Hostel)">Girls Hostel-2 (GH-2 / Sarojini Hostel)</option>
-                      <option value="Day Scholar">Day Scholar (Warangal / Hanamkonda)</option>
+                      {KITSW_RESIDENCE_OPTIONS.map((resOpt) => (
+                        <option key={resOpt} value={resOpt}>
+                          {resOpt}
+                        </option>
+                      ))}
                     </select>
                   </div>
 
                   <div>
                     <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                      Room No.
+                      Room No. {hostel === 'Day Scholar' ? '(Optional)' : ''}
                     </label>
                     <input
                       type="text"
                       value={roomNumber}
                       onChange={(e) => setRoomNumber(e.target.value)}
-                      placeholder="e.g. 304"
+                      placeholder={hostel === 'Day Scholar' ? 'N/A' : 'e.g. 304'}
                       className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
                     />
                   </div>

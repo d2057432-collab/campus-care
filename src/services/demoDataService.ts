@@ -10,8 +10,66 @@ import { doc, writeBatch } from 'firebase/firestore';
 export const COLLEGE_DOMAIN = 'kitsw.ac.in';
 export const COLLEGE_NAME = 'Kakatiya Institute of Technology & Science, Warangal (KITSW)';
 
+// Structured KITSW Campus Blocks & Hostel Facilities for Complaint Location Selector
+export const KITSW_CAMPUS_BLOCKS = [
+  'Block-I',
+  'Block-II',
+  'Block-III',
+  'Block-IV',
+  'Silver Jubilee Block',
+  'Mechanical Sheds',
+  'Block-V (Freshman Block)',
+  'Central Library & Digital Centre',
+  'Auditorium & Open Air Theatre',
+  'Indoor Sports Complex & Gym',
+];
+
+export const KITSW_HOSTEL_FACILITIES = [
+  'Boys Hostel-1',
+  'Boys Hostel-2',
+  'Girls Hostel',
+  'Student Central Mess & Dining Hall',
+  'Campus Cafeteria & Canteen',
+];
+
+// Student Residence / Accommodation Options (Replaced old hostel names with College Hostel, Outside Hostel, Day Scholar)
+export const KITSW_RESIDENCE_OPTIONS = [
+  'College Hostel (Boys Hostel-1 / Boys Hostel-2 / Girls Hostel)',
+  'Outside Hostel / Private PG',
+  'Day Scholar',
+];
+
+// Complete KITSW Academic Branches (UG & PG)
+export const KITSW_BRANCHES = [
+  'Computer Science & Engineering (CSE)',
+  'CSE - Artificial Intelligence & Machine Learning (CSM)',
+  'CSE - Data Science (CSD)',
+  'CSE - Internet of Things (CSO)',
+  'CSE - Networks (CSN)',
+  'Computer Science & Business Systems (CSBS)',
+  'Information Technology (IT)',
+  'Electronics & Communication Engineering (ECE)',
+  'Electronics & Communication - IoT (ECI)',
+  'Electrical & Electronics Engineering (EEE)',
+  'Electronics & Instrumentation Engineering (EIE)',
+  'Mechanical Engineering (MECH)',
+  'Civil Engineering (CIVIL)',
+  'Physical Sciences & Humanities (PSH)',
+  'Master of Business Administration (MBA)',
+  'M.Tech - Software Engineering / VLSI / Structural & Construction',
+];
+
 // Complete Master List of KITSW Campus Locations & Facilities
 export const KITSW_CAMPUS_PLACES = [
+  'Block-I',
+  'Block-II',
+  'Block-III',
+  'Block-IV',
+  'Silver Jubilee Block',
+  'Mechanical Sheds',
+  'Boys Hostel-1',
+  'Boys Hostel-2',
+  'Girls Hostel',
   'Block-I (Administrative Block & Examination Cell)',
   'Block-II (Civil & Mechanical Engineering)',
   'Block-III (Electronics & Electrical Engineering - ECE & EEE)',
@@ -22,11 +80,6 @@ export const KITSW_CAMPUS_PLACES = [
   'Auditorium & Open Air Theatre (OAT)',
   'Indoor Sports Complex, Gymnasium & Badminton Courts',
   'Outdoor Sports Ground & Cricket Pavilion',
-  'Boys Hostel-1 (BH-1 / Krishna Hostel)',
-  'Boys Hostel-2 (BH-2 / Godavari Hostel)',
-  'Boys Hostel-3 (BH-3 / Kaveri Hostel)',
-  'Girls Hostel-1 (GH-1 / Priyadarshini Hostel)',
-  'Girls Hostel-2 (GH-2 / Sarojini Hostel)',
   'Student Central Mess & Dining Hall',
   'Campus Cafeteria & Canteen',
   'Health Centre & Dispensary',
@@ -46,7 +99,7 @@ export const DEMO_DEPARTMENTS: Department[] = [
     description: 'Campus network backbone, Wi-Fi in Academic Blocks & Hostels, lab systems, student portal.',
     headId: 'staff-head-it',
     headName: 'Dr. Sunita Rao',
-    categoriesHandled: ['IT', 'Wi-Fi/Internet', 'Laboratory'],
+    categoriesHandled: ['Network/Wi-Fi', 'IT', 'Wi-Fi/Internet', 'Laboratory'],
     slaHours: { CRITICAL: 4, HIGH: 12, MEDIUM: 24, LOW: 48 },
     isActive: true,
     staffCount: 8,
@@ -58,7 +111,7 @@ export const DEMO_DEPARTMENTS: Department[] = [
     description: 'Campus water overhead tanks, washroom plumbing, sanitation, drainage in blocks & hostels.',
     headId: 'staff-head-plumb',
     headName: 'Er. Ramesh Kulkarni',
-    categoriesHandled: ['Plumbing', 'Cleanliness', 'Infrastructure'],
+    categoriesHandled: ['Civil', 'Plumbing', 'Cleanliness', 'Infrastructure'],
     slaHours: { CRITICAL: 4, HIGH: 24, MEDIUM: 48, LOW: 72 },
     isActive: true,
     staffCount: 10,
@@ -67,10 +120,10 @@ export const DEMO_DEPARTMENTS: Department[] = [
     id: 'dept-hostel',
     name: 'Hostel & Residential Life',
     code: 'HOSTEL-ADMIN',
-    description: 'Boys Hostel 1, 2, 3 and Girls Hostel 1, 2 facilities, discipline, and residential welfare.',
+    description: 'Boys Hostel-1, Boys Hostel-2, and Girls Hostel facilities, discipline, and residential welfare.',
     headId: 'staff-warden-chief',
     headName: 'Col. Rajesh Pillai',
-    categoriesHandled: ['Hostel', 'Security'],
+    categoriesHandled: ['Hostel Maintenance', 'Hostel', 'Security'],
     slaHours: { CRITICAL: 6, HIGH: 24, MEDIUM: 48, LOW: 72 },
     isActive: true,
     staffCount: 14,
@@ -79,7 +132,7 @@ export const DEMO_DEPARTMENTS: Department[] = [
     id: 'dept-electrical',
     name: 'Electrical & Power Grid',
     code: 'EEE-POWER',
-    description: 'Campus substation, classroom projectors, streetlights, hostel solar heaters, generator backups.',
+    description: 'Campus substation, classroom projectors, AC faults, lab switches, streetlights, generator backups.',
     headId: 'staff-head-elec',
     headName: 'Mr. Arvind Sharma',
     categoriesHandled: ['Electrical'],
@@ -106,7 +159,7 @@ export const DEMO_DEPARTMENTS: Department[] = [
     description: 'Course registration, hall tickets, timetable grievances, classroom infrastructure.',
     headId: 'staff-head-acad',
     headName: 'Prof. S. Chandrasekhar',
-    categoriesHandled: ['Academics', 'Examination', 'Faculty'],
+    categoriesHandled: ['Academic', 'Academics', 'Examination', 'Faculty'],
     slaHours: { CRITICAL: 12, HIGH: 24, MEDIUM: 48, LOW: 72 },
     isActive: true,
     staffCount: 9,
@@ -152,7 +205,7 @@ export const DEMO_USERS: UserProfile[] = [
     role: 'WARDEN',
     departmentId: 'dept-hostel',
     departmentName: 'Hostel & Residential Life',
-    hostel: 'Boys Hostel-1 (BH-1 / Krishna Hostel)',
+    hostel: 'College Hostel (Boys Hostel-1 / Boys Hostel-2 / Girls Hostel)',
     phone: '+91 98491 54321',
     createdAt: new Date().toISOString(),
   },
@@ -173,7 +226,7 @@ export const DEMO_USERS: UserProfile[] = [
     email: 'student@kitsw.ac.in',
     displayName: 'Aarav Sharma (B22CS045)',
     role: 'STUDENT',
-    hostel: 'Boys Hostel-1 (BH-1 / Krishna Hostel)',
+    hostel: 'College Hostel (Boys Hostel-1 / Boys Hostel-2 / Girls Hostel)',
     roomNumber: '304',
     phone: '+91 91234 56789',
     createdAt: new Date().toISOString(),
