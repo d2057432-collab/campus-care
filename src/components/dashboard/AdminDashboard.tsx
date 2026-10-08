@@ -1331,7 +1331,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               </span>
                             </div>
                             <p className="text-slate-700 dark:text-slate-300 text-[11px]">
-                              {log.details}
+                              {typeof log.details === 'string' ? log.details : JSON.stringify(log.details)}
                             </p>
                             <div className="text-[10px] text-slate-400">
                               By: {log.performedBy} ({log.performedByRole})

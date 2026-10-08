@@ -86,12 +86,16 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   // Listen for user notifications when authenticated
   useEffect(() => {
-    if (!currentUser || !userProfile?.uid) return;
-    const unsub = subscribeToNotifications(userProfile.uid, (list) => {
-      setNotifications(list);
-    });
+    if (!userProfile?.uid) return;
+    const unsub = subscribeToNotifications(
+      userProfile.uid,
+      (list) => {
+        setNotifications(list);
+      },
+      userProfile.email
+    );
     return () => unsub();
-  }, [currentUser, userProfile?.uid]);
+  }, [currentUser, userProfile?.uid, userProfile?.email]);
 
   const unreadCount = notifications.filter((n) => !n.isRead).length;
 

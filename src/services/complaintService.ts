@@ -11,7 +11,7 @@ import {
   onSnapshot,
   serverTimestamp,
 } from 'firebase/firestore';
-import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
+import { db, auth, handleFirestoreError, safeLogFirestoreError, OperationType } from '../lib/firebase';
 import {
   Complaint,
   ComplaintStatus,
@@ -102,10 +102,22 @@ export async function createComplaint(
     // Create notification for student
     await createNotification({
       userId: data.studentId,
+      userEmail: data.studentEmail,
       title: `Complaint Submitted (${complaintId})`,
       message: `Your complaint "${data.title}" was submitted successfully. Expected resolution within ${slaHours} hours.`,
       type: 'SUBMITTED',
       complaintId,
+      newStatus: 'SUBMITTED',
+    }).catch(() => {});
+  } else {
+    await createNotification({
+      userId: data.studentId,
+      userEmail: data.studentEmail,
+      title: `Complaint Submitted (${complaintId})`,
+      message: `Your complaint "${data.title}" was submitted successfully. Expected resolution within ${slaHours} hours.`,
+      type: 'SUBMITTED',
+      complaintId,
+      newStatus: 'SUBMITTED',
     }).catch(() => {});
   }
 
@@ -163,7 +175,7 @@ export async function updateComplaintStatus(
     try {
       await updateDoc(docRef, updateData);
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `complaints/${complaint.id}`);
+      safeLogFirestoreError(error, OperationType.UPDATE, `complaints/${complaint.id}`);
     }
 
     // Audit log
@@ -177,16 +189,18 @@ export async function updateComplaintStatus(
       timestamp: now,
       details: { from: complaint.status, to: newStatus, note: options?.comment },
     }).catch(() => {});
-
-    // Notify student
-    await createNotification({
-      userId: complaint.studentId,
-      title: `Complaint Updated: ${newStatus.replace('_', ' ')}`,
-      message: `Your complaint ${complaint.complaintId} has been marked as ${newStatus.replace('_', ' ')}.`,
-      type: newStatus === 'RESOLVED' ? 'RESOLVED' : 'STATUS_CHANGE',
-      complaintId: complaint.complaintId,
-    }).catch(() => {});
   }
+
+  // Always notify the student when their complaint status changes
+  await createNotification({
+    userId: complaint.studentId,
+    userEmail: complaint.studentEmail,
+    title: `Complaint Status Updated: ${newStatus.replace('_', ' ')}`,
+    message: `Your complaint ${complaint.complaintId} ("${complaint.title}") status changed from ${complaint.status.replace('_', ' ')} to ${newStatus.replace('_', ' ')}.${options?.comment ? ` Note: ${options.comment}` : ''}`,
+    type: newStatus === 'RESOLVED' ? 'RESOLVED' : newStatus === 'ESCALATED' ? 'ESCALATED' : 'STATUS_CHANGE',
+    complaintId: complaint.complaintId,
+    newStatus,
+  }).catch(() => {});
 }
 
 // 3. Submit Feedback
@@ -309,7 +323,7 @@ export function subscribeToMessages(
       }
     },
     (err) => {
-      handleFirestoreError(err, OperationType.LIST, `complaints/${complaintId}/messages`);
+      safeLogFirestoreError(err, OperationType.LIST, `complaints/${complaintId}/messages`);
     }
   );
 }
@@ -337,17 +351,38 @@ export function subscribeToComplaints(
       callback(items);
     },
     (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'complaints');
+      safeLogFirestoreError(error, OperationType.LIST, 'complaints');
     }
   );
 }
 
-// 7. Notifications
-export async function createNotification(data: Omit<Notification, 'id' | 'createdAt' | 'isRead'>): Promise<void> {
-  if (!auth.currentUser) {
-    return;
-  }
+const LOCAL_NOTIFS_KEY = 'kitsw_notifications_store';
+const notifListeners = new Set<() => void>();
 
+function getLocalNotifications(): Notification[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_NOTIFS_KEY);
+    return raw ? (JSON.parse(raw) as Notification[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalNotification(notif: Notification): void {
+  try {
+    const existing = getLocalNotifications();
+    const updated = [notif, ...existing.filter((n) => n.id !== notif.id)].slice(0, 200);
+    localStorage.setItem(LOCAL_NOTIFS_KEY, JSON.stringify(updated));
+    notifListeners.forEach((fn) => fn());
+  } catch {
+    // Ignore storage error
+  }
+}
+
+// 7. Notifications
+export async function createNotification(
+  data: Omit<Notification, 'id' | 'createdAt' | 'isRead'>
+): Promise<void> {
   const notifRef = doc(collection(db, 'notifications'));
   const now = new Date().toISOString();
 
@@ -358,39 +393,114 @@ export async function createNotification(data: Omit<Notification, 'id' | 'create
     createdAt: now,
   };
 
-  try {
-    await setDoc(notifRef, notif);
-  } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, `notifications/${notifRef.id}`);
+  // Save locally & notify in-app listeners immediately
+  saveLocalNotification(notif);
+
+  // Sync to backend API
+  fetch('/api/notifications', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(notif),
+  }).catch(() => {});
+
+  if (auth.currentUser) {
+    try {
+      await setDoc(notifRef, notif);
+    } catch (error) {
+      safeLogFirestoreError(error, OperationType.CREATE, `notifications/${notifRef.id}`);
+    }
   }
 }
 
-export function subscribeToNotifications(userId: string, callback: (notifications: Notification[]) => void) {
-  if (!auth.currentUser || auth.currentUser.uid !== userId) {
-    return () => {};
+export function subscribeToNotifications(
+  userId: string,
+  callback: (notifications: Notification[]) => void,
+  userEmail?: string
+) {
+  const cleanEmail = userEmail?.trim().toLowerCase();
+  let firestoreNotifs: Notification[] = [];
+
+  const emitMerged = () => {
+    const localList = getLocalNotifications().filter(
+      (n) =>
+        n.userId === userId ||
+        (cleanEmail && n.userEmail?.toLowerCase() === cleanEmail)
+    );
+    const map = new Map<string, Notification>();
+    [...firestoreNotifs, ...localList].forEach((n) => {
+      map.set(n.id, n);
+    });
+    const merged = Array.from(map.values()).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    callback(merged);
+  };
+
+  emitMerged();
+  notifListeners.add(emitMerged);
+
+  // Also fetch backend notifications
+  fetch(`/api/notifications/${encodeURIComponent(userId)}?email=${encodeURIComponent(cleanEmail || '')}`)
+    .then((r) => (r.ok ? r.json() : null))
+    .then((data) => {
+      if (data?.notifications && Array.isArray(data.notifications)) {
+        data.notifications.forEach((n: Notification) => saveLocalNotification(n));
+      }
+    })
+    .catch(() => {});
+
+  const handleStorage = (e: StorageEvent) => {
+    if (e.key === LOCAL_NOTIFS_KEY) {
+      emitMerged();
+    }
+  };
+  if (typeof window !== 'undefined') {
+    window.addEventListener('storage', handleStorage);
   }
 
-  const colRef = collection(db, 'notifications');
-  const q = query(colRef, where('userId', '==', userId), orderBy('createdAt', 'desc'));
+  let unsubFirestore = () => {};
+  if (auth.currentUser) {
+    const colRef = collection(db, 'notifications');
+    const q = query(colRef, where('userId', '==', userId));
 
-  return onSnapshot(
-    q,
-    (snapshot) => {
-      const notifs = snapshot.docs.map((d) => d.data() as Notification);
-      callback(notifs);
-    },
-    (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'notifications');
+    unsubFirestore = onSnapshot(
+      q,
+      (snapshot) => {
+        firestoreNotifs = snapshot.docs.map((d) => d.data() as Notification);
+        emitMerged();
+      },
+      (error) => {
+        safeLogFirestoreError(error, OperationType.LIST, 'notifications');
+      }
+    );
+  }
+
+  return () => {
+    notifListeners.delete(emitMerged);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('storage', handleStorage);
     }
-  );
+    unsubFirestore();
+  };
 }
 
 export async function markNotificationAsRead(notificationId: string): Promise<void> {
+  try {
+    const existing = getLocalNotifications();
+    const updated = existing.map((n) =>
+      n.id === notificationId ? { ...n, isRead: true } : n
+    );
+    localStorage.setItem(LOCAL_NOTIFS_KEY, JSON.stringify(updated));
+    notifListeners.forEach((fn) => fn());
+  } catch {
+    // Ignore
+  }
+
   if (!auth.currentUser) return;
   try {
     await updateDoc(doc(db, 'notifications', notificationId), { isRead: true });
   } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, `notifications/${notificationId}`);
+    safeLogFirestoreError(error, OperationType.UPDATE, `notifications/${notificationId}`);
   }
 }
 
@@ -425,7 +535,7 @@ export function subscribeToAuditLogs(callback: (logs: AuditLog[]) => void) {
       callback(logs);
     },
     (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'auditLogs');
+      safeLogFirestoreError(error, OperationType.LIST, 'auditLogs');
     }
   );
 }
@@ -472,7 +582,7 @@ export function subscribeToUsers(callback: (users: UserProfile[]) => void) {
       callback(users);
     },
     (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'users');
+      safeLogFirestoreError(error, OperationType.LIST, 'users');
     }
   );
 }
@@ -522,7 +632,7 @@ export function subscribeToDepartments(callback: (departments: any[]) => void) {
       callback(items);
     },
     (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'departments');
+      safeLogFirestoreError(error, OperationType.LIST, 'departments');
     }
   );
 }
@@ -551,7 +661,7 @@ export function subscribeToAnnouncements(callback: (announcements: any[]) => voi
       callback(items);
     },
     (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'announcements');
+      safeLogFirestoreError(error, OperationType.LIST, 'announcements');
     }
   );
 }
