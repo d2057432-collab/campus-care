@@ -56,6 +56,26 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
+export function safeLogFirestoreError(error: unknown, operationType: OperationType, path: string | null): void {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData?.map((provider) => ({
+        providerId: provider.providerId,
+        email: provider.email,
+      })) || [],
+    },
+    operationType,
+    path,
+  };
+  console.warn('Firestore Listener Notice:', JSON.stringify(errInfo));
+}
+
 // CRITICAL CONSTRAINT: Test connection when app boots
 export async function testConnection(): Promise<boolean> {
   try {
@@ -69,5 +89,6 @@ export async function testConnection(): Promise<boolean> {
   }
 }
 
-// Fire connection test non-blockingly
-testConnection();
+// Fire connection test non-blockingly and safely
+testConnection().catch(() => {});
+

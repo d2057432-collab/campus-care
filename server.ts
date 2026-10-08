@@ -498,13 +498,148 @@ app.get('/api/health', (req: Request, res: Response) => {
   });
 });
 
+// In-memory & file-backed institutional registry & real-time fallback store
+const DATA_STORE_FILE = path.resolve(__dirname, '.campuscare_store.json');
+
+interface BackendDataStore {
+  users: Record<string, any>;
+  passwords: Record<string, string>;
+  complaints: any[];
+  notifications: any[];
+  announcements: any[];
+  departments: any[];
+  auditLogs: any[];
+}
+
+function loadStore(): BackendDataStore {
+  try {
+    if (fs.existsSync(DATA_STORE_FILE)) {
+      const raw = fs.readFileSync(DATA_STORE_FILE, 'utf-8');
+      return JSON.parse(raw);
+    }
+  } catch {
+    // Ignore read error
+  }
+  return {
+    users: {},
+    passwords: {},
+    complaints: [],
+    notifications: [],
+    announcements: [],
+    departments: [],
+    auditLogs: [],
+  };
+}
+
+function saveStore(store: BackendDataStore) {
+  try {
+    fs.writeFileSync(DATA_STORE_FILE, JSON.stringify(store, null, 2), 'utf-8');
+  } catch {
+    // Ignore write error
+  }
+}
+
+const backendStore = loadStore();
+
+// 6. Backend Auth & Registration Verification Endpoint
+app.post('/api/auth/register', (req: Request, res: Response) => {
+  const { email, password, profile } = req.body;
+  if (!email || !password || !profile) {
+    return res.status(400).json({ error: 'Email, password, and registration details are required.' });
+  }
+  const cleanEmail = String(email).trim().toLowerCase();
+  if (backendStore.users[cleanEmail] && backendStore.passwords[cleanEmail]) {
+    return res.status(409).json({
+      error: 'An account with this institutional email is already registered. Please sign in with your password.',
+    });
+  }
+  backendStore.users[cleanEmail] = { ...profile, email: cleanEmail };
+  backendStore.passwords[cleanEmail] = String(password);
+  saveStore(backendStore);
+  return res.json({ success: true, user: backendStore.users[cleanEmail] });
+});
+
+app.post('/api/auth/login', (req: Request, res: Response) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required.' });
+  }
+  const cleanEmail = String(email).trim().toLowerCase();
+  const storedUser = backendStore.users[cleanEmail];
+  const storedPassword = backendStore.passwords[cleanEmail];
+
+  if (!storedUser) {
+    return res.status(404).json({
+      error: 'No registered account found for this email. Please register your college details first.',
+      code: 'USER_NOT_FOUND',
+    });
+  }
+
+  if (storedPassword && storedPassword !== String(password)) {
+    return res.status(401).json({
+      error: 'Incorrect password. Please verify your password and try again.',
+      code: 'INVALID_PASSWORD',
+    });
+  }
+
+  return res.json({ success: true, user: storedUser });
+});
+
+app.get('/api/users', (req: Request, res: Response) => {
+  return res.json({ users: Object.values(backendStore.users) });
+});
+
+app.post('/api/users/sync', (req: Request, res: Response) => {
+  const { user, password } = req.body;
+  if (user && user.email) {
+    const cleanEmail = String(user.email).trim().toLowerCase();
+    backendStore.users[cleanEmail] = { ...backendStore.users[cleanEmail], ...user, email: cleanEmail };
+    if (password) {
+      backendStore.passwords[cleanEmail] = String(password);
+    }
+    saveStore(backendStore);
+  }
+  return res.json({ success: true, users: Object.values(backendStore.users) });
+});
+
+app.get('/api/notifications/:userId', (req: Request, res: Response) => {
+  const { userId } = req.params;
+  const email = String(req.query.email || '').trim().toLowerCase();
+  const list = backendStore.notifications.filter(
+    (n) => n.userId === userId || (email && n.userEmail?.toLowerCase() === email)
+  );
+  return res.json({ notifications: list });
+});
+
+app.post('/api/notifications', (req: Request, res: Response) => {
+  const notif = req.body;
+  if (notif && notif.id) {
+    backendStore.notifications.unshift(notif);
+    backendStore.notifications = backendStore.notifications.slice(0, 300);
+    saveStore(backendStore);
+  }
+  return res.json({ success: true });
+});
+
+// Global process handlers to prevent unhandled rejections from crashing the server
+process.on('unhandledRejection', (reason) => {
+  console.warn('[Server Unhandled Rejection Caught]:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.warn('[Server Uncaught Exception Caught]:', err);
+});
+
 // Vite Integration: Dev vs Prod
 const isProduction = process.env.NODE_ENV === 'production';
 
 if (!isProduction) {
   const { createServer: createViteServer } = await import('vite');
   const vite = await createViteServer({
-    server: { middlewareMode: true },
+    server: {
+      middlewareMode: true,
+      hmr: false,
+      watch: null,
+    },
     appType: 'spa',
   });
   app.use(vite.middlewares);

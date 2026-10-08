@@ -170,10 +170,12 @@ export interface ComplaintMessage {
 export interface Notification {
   id: string;
   userId: string;
+  userEmail?: string;
   title: string;
   message: string;
   type: 'SUBMITTED' | 'ASSIGNED' | 'STATUS_CHANGE' | 'ESCALATED' | 'RESOLVED' | 'DUPLICATE' | 'ANNOUNCEMENT';
   complaintId?: string;
+  newStatus?: ComplaintStatus;
   isRead: boolean;
   createdAt: string;
 }

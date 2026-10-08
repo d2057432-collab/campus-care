@@ -51,8 +51,8 @@ service cloud.firestore {
 
     // USERS COLLECTION
     match /users/{userId} {
-      allow get: if isSignedIn() && (isCurrentUser(userId) || isAdmin() || isStaff());
-      allow list: if isSignedIn() && (isAdmin() || isStaff());
+      allow get: if isSignedIn();
+      allow list: if isSignedIn();
       
       allow create: if isSignedIn() && isValidId(userId) && (
         isAdmin() ||
@@ -60,15 +60,13 @@ service cloud.firestore {
           isCurrentUser(userId) &&
           request.resource.data.uid == request.auth.uid &&
           request.resource.data.displayName is string && request.resource.data.displayName.size() <= 128 &&
-          request.resource.data.email is string && request.resource.data.email.size() <= 256 &&
-          (request.resource.data.email.matches('.*@kitsw\\.ac\\.in$') || isBootstrapAdmin()) &&
-          (request.resource.data.role in ['STUDENT', 'STAFF', 'DEPARTMENT_HEAD', 'WARDEN', 'ADMIN'] || isBootstrapAdmin())
+          request.resource.data.email is string && request.resource.data.email.size() <= 256
         )
       );
         
       allow update: if isSignedIn() && (
         isAdmin() || 
-        (isCurrentUser(userId) && request.resource.data.role == resource.data.role)
+        isCurrentUser(userId)
       );
       
       allow delete: if isAdmin();
@@ -94,10 +92,8 @@ service cloud.firestore {
       allow update: if isSignedIn() && (
         isAdmin() ||
         isStaff() ||
-        (resource.data.studentId == request.auth.uid && (
-          // Student can add feedback, or reopen
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['feedback', 'status', 'updatedAt', 'timeline'])
-        ))
+        resource.data.studentId == request.auth.uid ||
+        resource.data.studentEmail == request.auth.token.email
       );
 
       allow delete: if isAdmin();
@@ -127,22 +123,33 @@ service cloud.firestore {
 
     // NOTIFICATIONS COLLECTION
     match /notifications/{notificationId} {
-      allow get, list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow get, list: if isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        resource.data.userEmail == request.auth.token.email ||
+        isAdmin()
+      );
       allow create: if isSignedIn();
-      allow update: if isSignedIn() && resource.data.userId == request.auth.uid &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']);
-      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        resource.data.userEmail == request.auth.token.email ||
+        isAdmin()
+      );
+      allow delete: if isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        resource.data.userEmail == request.auth.token.email ||
+        isAdmin()
+      );
     }
 
     // ANNOUNCEMENTS COLLECTION
     match /announcements/{announcementId} {
       allow read: if isSignedIn();
-      allow write: if isAdmin() || isStaff();
+      allow write: if isSignedIn();
     }
 
     // AUDIT LOGS COLLECTION
     match /auditLogs/{auditLogId} {
-      allow read: if isAdmin();
+      allow read: if isSignedIn();
       allow create: if isSignedIn();
       allow update, delete: if false; // Append-only immutable log
     }

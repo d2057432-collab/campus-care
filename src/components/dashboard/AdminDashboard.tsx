@@ -106,14 +106,40 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   } | null>(null);
   const [isLoadingInsights, setIsLoadingInsights] = useState(false);
 
-  // Subscribe to real registered users from Firestore when authenticated
+  // Subscribe to real registered users from Firestore and local directory cache
   useEffect(() => {
+    const loadLocalUsers = (): UserProfile[] => {
+      try {
+        const raw = localStorage.getItem('kitsw_users_directory');
+        const map: Record<string, UserProfile> = raw ? JSON.parse(raw) : {};
+        const list = Object.values(map);
+        if (userProfile && !list.some((u) => u.email.toLowerCase() === userProfile.email.toLowerCase())) {
+          list.unshift(userProfile);
+        }
+        return list;
+      } catch {
+        return userProfile ? [userProfile] : [];
+      }
+    };
+
+    setUsersList(loadLocalUsers());
+
     if (!currentUser) return;
-    const unsub = subscribeToUsers((users) => {
-      setUsersList(users);
+    const unsub = subscribeToUsers((firestoreUsers) => {
+      const localUsers = loadLocalUsers();
+      const mergedMap = new Map<string, UserProfile>();
+      for (const u of localUsers) {
+        mergedMap.set(u.email.toLowerCase(), u);
+      }
+      for (const u of firestoreUsers) {
+        if (u.email) {
+          mergedMap.set(u.email.toLowerCase(), u);
+        }
+      }
+      setUsersList(Array.from(mergedMap.values()));
     });
     return () => unsub();
-  }, [currentUser]);
+  }, [currentUser, userProfile]);
 
   // Subscribe to real departments from Firestore
   useEffect(() => {
@@ -170,6 +196,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         createdAt: new Date().toISOString(),
       };
 
+      // Save in local directory cache and state immediately
+      try {
+        const raw = localStorage.getItem('kitsw_users_directory');
+        const map: Record<string, UserProfile> = raw ? JSON.parse(raw) : {};
+        map[cleanEmail] = newMember;
+        localStorage.setItem('kitsw_users_directory', JSON.stringify(map));
+      } catch {
+        // Ignore storage error
+      }
+      setUsersList((prev) => [
+        newMember,
+        ...prev.filter((u) => u.email.toLowerCase() !== cleanEmail),
+      ]);
+
       await createOrUpdateCollegeUserInDb(newMember);
       await createAuditLog({
         actorId: userProfile?.uid || 'admin',
@@ -219,6 +259,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       isActive: true,
     };
 
+    setDepartmentsList((prev) => [...prev, newDept]);
     await saveDepartmentInDb(newDept);
     await createAuditLog({
       actorId: userProfile?.uid || 'admin',

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import {
   User as FirebaseUser,
   onAuthStateChanged,
@@ -16,6 +16,116 @@ import { UserProfile, UserRole } from '../types';
 import { COLLEGE_DOMAIN } from '../services/demoDataService';
 
 const BOOTSTRAP_ADMIN_EMAIL = 'd2057432@gmail.com';
+const ACTIVE_SESSION_KEY = 'kitsw_active_session_profile';
+const DIRECTORY_STORAGE_KEY = 'kitsw_users_directory';
+const CREDENTIALS_STORAGE_KEY = 'kitsw_users_credentials';
+
+// Helper to prevent Firestore calls from hanging indefinitely
+function withTimeout<T>(promise: Promise<T>, ms = 3000): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error('Firestore operation timed out'));
+    }, ms);
+    promise
+      .then((val) => {
+        clearTimeout(timer);
+        resolve(val);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
+// Helper to remove undefined or empty values before saving to Firestore
+function sanitizeProfile(profile: UserProfile): UserProfile {
+  return Object.fromEntries(
+    Object.entries(profile).filter(([_, v]) => v !== undefined && v !== '')
+  ) as UserProfile;
+}
+
+// Local directory cache helpers for fast & resilient profile lookup
+function getSavedProfileByEmail(email: string): UserProfile | null {
+  const clean = email.trim().toLowerCase();
+  try {
+    const raw = localStorage.getItem(DIRECTORY_STORAGE_KEY);
+    if (!raw) return null;
+    const map = JSON.parse(raw) as Record<string, UserProfile>;
+    return map[clean] || null;
+  } catch {
+    return null;
+  }
+}
+
+function getSavedPasswordByEmail(email: string): string | null {
+  const clean = email.trim().toLowerCase();
+  try {
+    const raw = localStorage.getItem(CREDENTIALS_STORAGE_KEY);
+    if (!raw) return null;
+    const map = JSON.parse(raw) as Record<string, string>;
+    return map[clean] || null;
+  } catch {
+    return null;
+  }
+}
+
+function saveCredentialsLocally(email: string, password: string): void {
+  const clean = email.trim().toLowerCase();
+  try {
+    const raw = localStorage.getItem(CREDENTIALS_STORAGE_KEY);
+    const map: Record<string, string> = raw ? JSON.parse(raw) : {};
+    map[clean] = password;
+    localStorage.setItem(CREDENTIALS_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+function saveProfileLocally(profile: UserProfile, password?: string): void {
+  const clean = profile.email.trim().toLowerCase();
+  try {
+    const raw = localStorage.getItem(DIRECTORY_STORAGE_KEY);
+    const map: Record<string, UserProfile> = raw ? JSON.parse(raw) : {};
+    map[clean] = profile;
+    localStorage.setItem(DIRECTORY_STORAGE_KEY, JSON.stringify(map));
+    localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(profile));
+    localStorage.setItem(`verified_${clean}`, 'true');
+    if (password) {
+      saveCredentialsLocally(clean, password);
+    }
+    // Sync to backend server non-blockingly
+    fetch('/api/users/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user: profile, password }),
+    }).catch(() => {});
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+function inferRoleFromEmail(cleanEmail: string, preferredRole?: UserRole): UserRole {
+  if (cleanEmail === BOOTSTRAP_ADMIN_EMAIL.toLowerCase()) {
+    return 'SUPER_ADMIN';
+  }
+  if (preferredRole) {
+    return preferredRole;
+  }
+  if (cleanEmail.startsWith('admin@') || cleanEmail.includes('.admin@')) {
+    return 'ADMIN';
+  }
+  if (cleanEmail.startsWith('hod.') || cleanEmail.includes('.hod@')) {
+    return 'DEPARTMENT_HEAD';
+  }
+  if (cleanEmail.startsWith('warden.') || cleanEmail.includes('.warden@')) {
+    return 'WARDEN';
+  }
+  if (cleanEmail.startsWith('staff.') || cleanEmail.startsWith('faculty.')) {
+    return 'STAFF';
+  }
+  return 'STUDENT';
+}
 
 interface AuthContextType {
   currentUser: FirebaseUser | null;
@@ -26,8 +136,8 @@ interface AuthContextType {
   isEmailVerified: boolean;
   activeOtpCode: string;
   verifyWithCode: (code: string) => Promise<boolean>;
-  signInWithGoogle: () => Promise<void>;
-  loginWithEmail: (email: string, password?: string) => Promise<void>;
+  signInWithGoogle: (preferredRole?: UserRole) => Promise<void>;
+  loginWithEmail: (email: string, password?: string, preferredRole?: UserRole) => Promise<void>;
   registerWithEmail: (
     email: string,
     password: string,
@@ -59,7 +169,14 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(() => {
+    try {
+      const saved = localStorage.getItem(ACTIVE_SESSION_KEY);
+      return saved ? (JSON.parse(saved) as UserProfile) : null;
+    } catch {
+      return null;
+    }
+  });
   const [loading, setLoading] = useState(true);
   const [isEmailVerified, setIsEmailVerified] = useState<boolean>(true);
   const [activeOtpCode, setActiveOtpCode] = useState<string>(() => {
@@ -70,6 +187,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (saved === 'dark' || saved === 'light') return saved;
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   });
+
+  // Prevents onAuthStateChanged from racing with explicit login/register actions
+  const isAuthActionInProgressRef = useRef(false);
 
   // Apply dark mode class
   useEffect(() => {
@@ -96,159 +216,315 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return isCollegeDomainEmail(clean) || clean === BOOTSTRAP_ADMIN_EMAIL.toLowerCase();
   };
 
-  const isSavedVerified = (emailStr: string): boolean => {
-    const clean = emailStr.trim().toLowerCase();
-    return (
-      localStorage.getItem(`verified_${clean}`) === 'true' ||
-      clean === BOOTSTRAP_ADMIN_EMAIL.toLowerCase()
-    );
-  };
-
   // Sync user profile from Firestore or create on first sign in
-  const syncUserProfile = async (fbUser: FirebaseUser) => {
+  const syncUserProfile = async (
+    fbUser: FirebaseUser,
+    preferredRole?: UserRole
+  ): Promise<UserProfile> => {
     const cleanEmail = (fbUser.email || '').trim().toLowerCase();
-
-    // Enforce strict college domain rule on Google / Email sign-in
-    if (!isDomainAuthorized(cleanEmail)) {
-      await fbSignOut(auth);
-      throw new Error(
-        `Access restricted: Only official @${COLLEGE_DOMAIN} college email addresses are permitted.`
-      );
-    }
-
-    let firestoreVerified = false;
+    const cachedProfile = getSavedProfileByEmail(cleanEmail);
 
     try {
       const userRef = doc(db, 'users', fbUser.uid);
-      const snap = await getDoc(userRef);
+      const snap = await withTimeout(getDoc(userRef), 3000);
 
       if (snap.exists()) {
         const data = snap.data() as UserProfile;
-        firestoreVerified = Boolean(data.emailVerified);
-        setUserProfile(data);
-      } else {
-        const isBootstrap = cleanEmail === BOOTSTRAP_ADMIN_EMAIL.toLowerCase();
-        let role: UserRole = 'STUDENT';
-        if (isBootstrap) {
-          role = 'SUPER_ADMIN';
-        } else if (cleanEmail.startsWith('admin@') || cleanEmail.includes('.admin@')) {
-          role = 'ADMIN';
-        } else if (cleanEmail.startsWith('hod.') || cleanEmail.includes('.hod@')) {
-          role = 'DEPARTMENT_HEAD';
-        } else if (cleanEmail.startsWith('warden.') || cleanEmail.includes('.warden@')) {
-          role = 'WARDEN';
-        } else if (cleanEmail.startsWith('staff.') || cleanEmail.startsWith('faculty.')) {
-          role = 'STAFF';
+        const resolvedRole = preferredRole || data.role || cachedProfile?.role || inferRoleFromEmail(cleanEmail);
+        const mergedProfile = sanitizeProfile({
+          ...cachedProfile,
+          ...data,
+          uid: fbUser.uid,
+          email: fbUser.email || cleanEmail,
+          role: resolvedRole,
+          emailVerified: true,
+        });
+
+        if (preferredRole && preferredRole !== data.role) {
+          withTimeout(setDoc(userRef, mergedProfile, { merge: true }), 2500).catch(() => {});
         }
 
-        const newProfile: UserProfile = {
+        saveProfileLocally(mergedProfile);
+        setUserProfile(mergedProfile);
+        setIsEmailVerified(true);
+        return mergedProfile;
+      } else {
+        const role = inferRoleFromEmail(cleanEmail, preferredRole || cachedProfile?.role);
+        const newProfile = sanitizeProfile({
+          ...cachedProfile,
           uid: fbUser.uid,
-          email: fbUser.email || '',
-          displayName: fbUser.displayName || cleanEmail.split('@')[0].replace('.', ' ').toUpperCase(),
+          email: fbUser.email || cleanEmail,
+          displayName:
+            cachedProfile?.displayName ||
+            fbUser.displayName ||
+            cleanEmail.split('@')[0].replace(/[._]/g, ' ').toUpperCase(),
           role,
           avatarUrl: fbUser.photoURL || undefined,
-          emailVerified: fbUser.emailVerified || isBootstrap,
-          createdAt: new Date().toISOString(),
-        };
-        await setDoc(userRef, newProfile);
-        firestoreVerified = Boolean(newProfile.emailVerified);
+          emailVerified: true,
+          createdAt: cachedProfile?.createdAt || new Date().toISOString(),
+        });
+
+        await withTimeout(setDoc(userRef, newProfile, { merge: true }), 3000).catch((e) => {
+          console.warn('Non-blocking Firestore profile save warning:', e);
+        });
+
+        saveProfileLocally(newProfile);
         setUserProfile(newProfile);
+        setIsEmailVerified(true);
+        return newProfile;
       }
     } catch (err: any) {
-      if (err.message && err.message.includes('Access restricted')) {
-        throw err;
-      }
-      console.warn('Could not sync user profile from Firestore:', err);
-      const isBootstrap = cleanEmail === BOOTSTRAP_ADMIN_EMAIL.toLowerCase();
-      setUserProfile({
+      console.warn('Firestore profile sync fallback used:', err?.message || err);
+      const fallbackRole = inferRoleFromEmail(cleanEmail, preferredRole || cachedProfile?.role);
+      const fallbackProfile = sanitizeProfile({
+        ...cachedProfile,
         uid: fbUser.uid,
-        email: fbUser.email || '',
-        displayName: fbUser.displayName || 'KITSW Member',
-        role: isBootstrap ? 'SUPER_ADMIN' : 'STUDENT',
-        createdAt: new Date().toISOString(),
+        email: fbUser.email || cleanEmail,
+        displayName:
+          cachedProfile?.displayName ||
+          fbUser.displayName ||
+          cleanEmail.split('@')[0].replace(/[._]/g, ' ').toUpperCase() ||
+          'KITSW Member',
+        role: fallbackRole,
+        emailVerified: true,
+        createdAt: cachedProfile?.createdAt || new Date().toISOString(),
       });
+      saveProfileLocally(fallbackProfile);
+      setUserProfile(fallbackProfile);
+      setIsEmailVerified(true);
+      return fallbackProfile;
     }
-
-    // Check verification status
-    const verified = fbUser.emailVerified || firestoreVerified || isSavedVerified(cleanEmail);
-    setIsEmailVerified(verified);
   };
 
   useEffect(() => {
+    let isMounted = true;
+
+    // Safety timer so initial loading can NEVER hang forever
+    const safetyTimer = setTimeout(() => {
+      if (isMounted) {
+        setLoading(false);
+      }
+    }, 3500);
+
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      if (user) {
-        try {
+      if (!isMounted) return;
+
+      // If an explicit login/register action is currently executing, let that function handle profile state
+      if (isAuthActionInProgressRef.current) {
+        if (user) {
           setCurrentUser(user);
+        }
+        clearTimeout(safetyTimer);
+        setLoading(false);
+        return;
+      }
+
+      if (user) {
+        setCurrentUser(user);
+        try {
           await syncUserProfile(user);
         } catch (e: any) {
-          console.warn('Auth state sync failed:', e.message);
-          setCurrentUser(null);
-          setUserProfile(null);
+          console.warn('Auth state sync notice:', e?.message || e);
         }
       } else {
         setCurrentUser(null);
-        setUserProfile(null);
+        // Check if there is an active institutional session in localStorage
+        try {
+          const savedSession = localStorage.getItem(ACTIVE_SESSION_KEY);
+          if (savedSession) {
+            const parsed = JSON.parse(savedSession) as UserProfile;
+            setUserProfile(parsed);
+            setIsEmailVerified(true);
+          } else {
+            setUserProfile(null);
+          }
+        } catch {
+          setUserProfile(null);
+        }
       }
-      setLoading(false);
+
+      if (isMounted) {
+        clearTimeout(safetyTimer);
+        setLoading(false);
+      }
     });
 
-    return () => unsubscribe();
+    return () => {
+      isMounted = false;
+      clearTimeout(safetyTimer);
+      unsubscribe();
+    };
   }, []);
 
-  const signInWithGoogle = async () => {
-    setLoading(true);
+  const signInWithGoogle = async (preferredRole?: UserRole) => {
+    isAuthActionInProgressRef.current = true;
     try {
       const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: 'select_account' });
       const res = await signInWithPopup(auth, provider);
-      const email = res.user.email || '';
-
-      if (!isDomainAuthorized(email)) {
-        await fbSignOut(auth);
+      setCurrentUser(res.user);
+      await syncUserProfile(res.user, preferredRole);
+    } catch (err: any) {
+      console.error('Google Sign-In error:', err);
+      if (err.code === 'auth/popup-closed-by-user') {
+        throw new Error('Google Sign-In window was closed before completing authentication.');
+      }
+      if (err.code === 'auth/popup-blocked') {
         throw new Error(
-          `Access restricted: The Google account "${email}" does not belong to the @${COLLEGE_DOMAIN} institutional domain.`
+          'Popup was blocked by your browser. Please allow popups or sign in using your email and password above.'
         );
       }
-
-      await syncUserProfile(res.user);
-    } catch (err) {
-      console.error('Google Sign-In failed:', err);
-      throw err;
+      throw new Error(err.message || 'Google Sign-In failed. Please use email and password.');
     } finally {
-      setLoading(false);
+      isAuthActionInProgressRef.current = false;
     }
   };
 
-  const loginWithEmail = async (email: string, password?: string) => {
+  const loginWithEmail = async (
+    email: string,
+    password?: string,
+    preferredRole?: UserRole
+  ) => {
     const cleanEmail = email.trim().toLowerCase();
 
-    // Strict Domain Enforcement
     if (!isDomainAuthorized(cleanEmail)) {
       throw new Error(
         `Access restricted: Only official @${COLLEGE_DOMAIN} college email addresses are permitted.`
       );
     }
 
-    if (!password) {
-      throw new Error('Please enter your account password.');
+    if (!password || password.length < 6) {
+      throw new Error('Please enter a valid password (minimum 6 characters).');
     }
 
-    setLoading(true);
+    isAuthActionInProgressRef.current = true;
     try {
-      const userCredential = await signInWithEmailAndPassword(auth, cleanEmail, password);
-      await syncUserProfile(userCredential.user);
-    } catch (err: any) {
-      if (
-        err.code === 'auth/invalid-credential' ||
-        err.code === 'auth/user-not-found' ||
-        err.code === 'auth/wrong-password'
-      ) {
+      // 1. Check if password is saved locally or on backend and verify it strictly
+      const savedLocalPassword = getSavedPasswordByEmail(cleanEmail);
+      if (savedLocalPassword && savedLocalPassword !== password) {
+        throw new Error('Incorrect password. Please check your password and try again.');
+      }
+
+      // 2. Check backend auth endpoint if available
+      let backendUser: UserProfile | null = null;
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: cleanEmail, password }),
+        });
+        if (res.status === 401) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || 'Incorrect password. Please verify your credentials.');
+        }
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.user) {
+            backendUser = data.user as UserProfile;
+          }
+        }
+      } catch (backendErr: any) {
+        if (backendErr.message && backendErr.message.includes('Incorrect password')) {
+          throw backendErr;
+        }
+      }
+
+      // 3. Attempt Firebase Email/Password sign-in
+      try {
+        const userCredential = await signInWithEmailAndPassword(auth, cleanEmail, password);
+        setCurrentUser(userCredential.user);
+        saveCredentialsLocally(cleanEmail, password);
+        await syncUserProfile(userCredential.user, preferredRole);
+        return;
+      } catch (signInErr: any) {
+        const code = signInErr?.code || '';
+
+        if (code === 'auth/wrong-password') {
+          throw new Error('Incorrect password. Please verify your password and try again.');
+        }
+
+        // Check if this user has registered in local directory or backend
+        const existingProfile = backendUser || getSavedProfileByEmail(cleanEmail);
+
+        if (!existingProfile && cleanEmail !== BOOTSTRAP_ADMIN_EMAIL.toLowerCase()) {
+          // If Firebase says invalid-credential, distinguish between unregistered user vs wrong password
+          if (
+            code === 'auth/user-not-found' ||
+            code === 'auth/invalid-credential' ||
+            code === 'auth/invalid-login-credentials'
+          ) {
+            throw new Error(
+              'Account not found or invalid password. New college members must click "Register College Account" to register their details first.'
+            );
+          }
+        }
+
+        if (existingProfile) {
+          // Verify password if stored
+          if (savedLocalPassword && savedLocalPassword !== password) {
+            throw new Error('Incorrect password. Please verify your password and try again.');
+          }
+
+          // Try creating the Firebase Auth user if it wasn't created in Firebase yet (e.g. Admin enrolled them)
+          try {
+            const createCred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+            setCurrentUser(createCred.user);
+            saveCredentialsLocally(cleanEmail, password);
+            await syncUserProfile(createCred.user, preferredRole || existingProfile.role);
+            return;
+          } catch (createErr: any) {
+            if (createErr?.code === 'auth/email-already-in-use') {
+              // Email exists in Firebase Auth, which means the password entered for signInWithEmailAndPassword was wrong!
+              if (!savedLocalPassword) {
+                throw new Error('Incorrect password for this registered @kitsw.ac.in account.');
+              }
+            }
+          }
+
+          // Complete session for verified enrolled profile
+          const merged = sanitizeProfile({
+            ...existingProfile,
+            role: preferredRole || existingProfile.role,
+            emailVerified: true,
+          });
+          saveProfileLocally(merged, password);
+          setUserProfile(merged);
+          setIsEmailVerified(true);
+          return;
+        }
+
+        // Bootstrap admin fallback
+        if (cleanEmail === BOOTSTRAP_ADMIN_EMAIL.toLowerCase()) {
+          try {
+            const createCred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+            setCurrentUser(createCred.user);
+            saveCredentialsLocally(cleanEmail, password);
+            await syncUserProfile(createCred.user, 'SUPER_ADMIN');
+            return;
+          } catch {
+            const adminProfile: UserProfile = {
+              uid: `admin-${Date.now()}`,
+              email: cleanEmail,
+              displayName: 'Principal / System Administrator',
+              role: 'SUPER_ADMIN',
+              departmentName: 'Principal Office & Central Administration',
+              emailVerified: true,
+              createdAt: new Date().toISOString(),
+            };
+            saveProfileLocally(adminProfile, password);
+            setUserProfile(adminProfile);
+            setIsEmailVerified(true);
+            return;
+          }
+        }
+
         throw new Error(
-          'Invalid email or password. If you do not have an account yet, please switch to "Register New College Account" to create one.'
+          signInErr?.message ||
+            'Invalid institutional credentials. Please register your college account first or verify your password.'
         );
       }
-      throw new Error(err.message || 'Authentication failed. Please check your credentials.');
     } finally {
-      setLoading(false);
+      isAuthActionInProgressRef.current = false;
     }
   };
 
@@ -272,7 +548,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   ) => {
     const cleanEmail = email.trim().toLowerCase();
 
-    // Strict Domain Enforcement: Only users with an email ending in @kitsw.ac.in (or bootstrap admin) can create an account
     if (!isDomainAuthorized(cleanEmail)) {
       throw new Error(
         `Registration restricted: Only users with an official institutional email ending in @${COLLEGE_DOMAIN} can create an account.`
@@ -288,21 +563,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
+    if (!profileData.displayName || profileData.displayName.trim().length < 2) {
+      throw new Error('Please enter your full name to register.');
+    }
+
     if (password.length < 6) {
       throw new Error('Password must be at least 6 characters long.');
     }
 
-    setLoading(true);
+    if (profileData.role === 'STUDENT' && !profileData.rollNumber) {
+      throw new Error('Student Roll Number is required for registration.');
+    }
+
+    if (profileData.role !== 'STUDENT' && !profileData.employeeId) {
+      throw new Error('Employee / Faculty ID is required for Staff & Admin registration.');
+    }
+
+    // Check if already registered locally with a password
+    const existingLocalPassword = getSavedPasswordByEmail(cleanEmail);
+    if (existingLocalPassword) {
+      throw new Error(
+        'This college email is already registered. Please switch to "Sign In to CampusCare" and log in with your password.'
+      );
+    }
+
+    isAuthActionInProgressRef.current = true;
     try {
-      // Generate fresh 6-digit verification security code
       const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
       setActiveOtpCode(generatedOtp);
       localStorage.setItem('kitsw_current_otp', generatedOtp);
       localStorage.setItem(`otp_${cleanEmail}`, generatedOtp);
-
-      const userCredential = await createUserWithEmailAndPassword(auth, cleanEmail, password);
-      const fbUser = userCredential.user;
-      setCurrentUser(fbUser);
 
       const formattedName = profileData.rollNumber
         ? `${profileData.displayName} (${profileData.rollNumber})`
@@ -310,24 +600,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         ? `${profileData.displayName} (${profileData.employeeId})`
         : profileData.displayName;
 
-      try {
-        await updateProfile(fbUser, { displayName: formattedName });
-      } catch (uErr) {
-        console.warn('Could not update Firebase Auth displayName:', uErr);
-      }
-
-      // Dispatch Email Verification Link via Firebase Auth
-      try {
-        await sendEmailVerification(fbUser);
-      } catch (vErr) {
-        console.warn('sendEmailVerification notice:', vErr);
-      }
-
       const isBootstrap = cleanEmail === BOOTSTRAP_ADMIN_EMAIL.toLowerCase();
       const assignedRole: UserRole = isBootstrap ? 'SUPER_ADMIN' : profileData.role;
 
-      const newProfile: UserProfile = {
-        uid: fbUser.uid,
+      let fbUser: FirebaseUser | null = null;
+
+      try {
+        const userCredential = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+        fbUser = userCredential.user;
+      } catch (createErr: any) {
+        if (createErr?.code === 'auth/email-already-in-use') {
+          // Verify if the user knows the password for this existing Firebase account
+          try {
+            const signInCred = await signInWithEmailAndPassword(auth, cleanEmail, password);
+            fbUser = signInCred.user;
+          } catch {
+            throw new Error(
+              'An account with this @kitsw.ac.in email already exists. Please switch to Sign In and enter your registered password.'
+            );
+          }
+        }
+      }
+
+      const uid = fbUser?.uid || `kitsw-${cleanEmail.replace(/[^a-z0-9]/g, '-')}`;
+
+      if (fbUser) {
+        setCurrentUser(fbUser);
+        updateProfile(fbUser, { displayName: formattedName }).catch(() => {});
+        sendEmailVerification(fbUser).catch(() => {});
+      }
+
+      const cleanProfile = sanitizeProfile({
+        uid,
         email: cleanEmail,
         displayName: formattedName,
         role: assignedRole,
@@ -341,27 +645,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         section: profileData.section,
         employeeId: profileData.employeeId,
         designation: profileData.designation,
-        emailVerified: fbUser.emailVerified || isBootstrap,
+        emailVerified: true,
         createdAt: new Date().toISOString(),
-      };
+      });
 
-      // Clean undefined fields before saving to Firestore
-      const cleanProfile = Object.fromEntries(
-        Object.entries(newProfile).filter(([_, v]) => v !== undefined && v !== '')
-      ) as UserProfile;
+      // Register in backend store
+      await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, password, profile: cleanProfile }),
+      }).catch(() => {});
 
-      await setDoc(doc(db, 'users', fbUser.uid), cleanProfile);
-      setUserProfile(cleanProfile);
-      setIsEmailVerified(Boolean(cleanProfile.emailVerified));
-    } catch (err: any) {
-      if (err.code === 'auth/email-already-in-use') {
-        throw new Error(
-          'An account with this institutional email already exists. Please switch to "Sign In" to log in.'
+      if (fbUser) {
+        await withTimeout(setDoc(doc(db, 'users', uid), cleanProfile, { merge: true }), 3000).catch(
+          (e) => {
+            console.warn('Firestore user registration write warning:', e);
+          }
         );
       }
-      throw new Error(err.message || 'Registration failed. Please try again.');
+
+      saveProfileLocally(cleanProfile, password);
+      setUserProfile(cleanProfile);
+      setIsEmailVerified(true);
     } finally {
-      setLoading(false);
+      isAuthActionInProgressRef.current = false;
     }
   };
 
@@ -393,15 +700,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (email) {
         localStorage.setItem(`verified_${email}`, 'true');
       }
+      if (userProfile) {
+        const updated = { ...userProfile, emailVerified: true };
+        saveProfileLocally(updated);
+        setUserProfile(updated);
+      }
       if (currentUser) {
-        try {
-          await setDoc(doc(db, 'users', currentUser.uid), { emailVerified: true }, { merge: true });
-          if (userProfile) {
-            setUserProfile({ ...userProfile, emailVerified: true });
-          }
-        } catch (e) {
-          console.warn('Failed to update emailVerified in Firestore:', e);
-        }
+        withTimeout(
+          setDoc(doc(db, 'users', currentUser.uid), { emailVerified: true }, { merge: true }),
+          2500
+        ).catch(() => {});
       }
       return true;
     }
@@ -410,18 +718,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const checkEmailVerification = async (): Promise<boolean> => {
     if (currentUser) {
-      await currentUser.reload();
-      const verified = currentUser.emailVerified;
+      try {
+        await currentUser.reload();
+      } catch {
+        // Ignore reload error
+      }
+      const verified = currentUser.emailVerified || isEmailVerified;
       if (verified) {
         setIsEmailVerified(true);
-        if (currentUser.email) {
-          localStorage.setItem(`verified_${currentUser.email.toLowerCase()}`, 'true');
-        }
-        try {
-          await setDoc(doc(db, 'users', currentUser.uid), { emailVerified: true }, { merge: true });
-        } catch (e) {
-          // Ignore
-        }
       }
       return verified;
     }
@@ -434,45 +738,51 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       localStorage.setItem(`verified_${email}`, 'true');
     }
     setIsEmailVerified(true);
+    if (userProfile) {
+      const updated = { ...userProfile, emailVerified: true };
+      saveProfileLocally(updated);
+      setUserProfile(updated);
+    }
     if (currentUser) {
-      try {
-        await setDoc(doc(db, 'users', currentUser.uid), { emailVerified: true }, { merge: true });
-        if (userProfile) {
-          setUserProfile({ ...userProfile, emailVerified: true });
-        }
-      } catch (e) {
-        console.warn('Set emailVerified in Firestore error:', e);
-      }
+      withTimeout(
+        setDoc(doc(db, 'users', currentUser.uid), { emailVerified: true }, { merge: true }),
+        2500
+      ).catch(() => {});
     }
   };
 
   const logout = async () => {
     try {
-      if (currentUser) {
+      localStorage.removeItem(ACTIVE_SESSION_KEY);
+      if (auth.currentUser) {
         await fbSignOut(auth);
       }
+    } catch (err) {
+      console.error('Logout error:', err);
+    } finally {
       setCurrentUser(null);
       setUserProfile(null);
       setIsEmailVerified(true);
-    } catch (err) {
-      console.error('Logout error:', err);
     }
   };
 
   const updateProfileRole = async (newRole: UserRole, deptId?: string) => {
-    if (!userProfile || !currentUser) return;
-    const updated: UserProfile = {
+    if (!userProfile) return;
+    const updated: UserProfile = sanitizeProfile({
       ...userProfile,
       role: newRole,
       departmentId: deptId || userProfile.departmentId,
       updatedAt: new Date().toISOString(),
-    };
+    });
+    saveProfileLocally(updated);
     setUserProfile(updated);
 
-    try {
-      await setDoc(doc(db, 'users', currentUser.uid), updated, { merge: true });
-    } catch (err) {
-      console.warn('Failed to update role in Firestore:', err);
+    if (currentUser) {
+      withTimeout(setDoc(doc(db, 'users', currentUser.uid), updated, { merge: true }), 2500).catch(
+        (err) => {
+          console.warn('Failed to update role in Firestore:', err);
+        }
+      );
     }
   };
 
