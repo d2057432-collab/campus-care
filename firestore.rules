@@ -1,0 +1,156 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Test connection endpoint
+    match /test/connection {
+      allow read: if true;
+    }
+
+    // Default-deny global safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isCurrentUser(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isBootstrapAdmin() {
+      return isSignedIn() && request.auth.token.email == "d2057432@gmail.com";
+    }
+
+    function getUserDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function hasUserDoc() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function getUserRole() {
+      return hasUserDoc() ? getUserDoc().data.role : 'STUDENT';
+    }
+
+    function isAdmin() {
+      return isBootstrapAdmin() || (isSignedIn() && (getUserRole() == 'ADMIN' || getUserRole() == 'SUPER_ADMIN'));
+    }
+
+    function isStaff() {
+      return isAdmin() || (isSignedIn() && (getUserRole() == 'STAFF' || getUserRole() == 'DEPARTMENT_HEAD' || getUserRole() == 'WARDEN'));
+    }
+
+    // USERS COLLECTION
+    match /users/{userId} {
+      allow get: if isSignedIn() && (isCurrentUser(userId) || isAdmin() || isStaff());
+      allow list: if isSignedIn() && (isAdmin() || isStaff());
+      
+      allow create: if isSignedIn() && isValidId(userId) && (
+        isAdmin() ||
+        (
+          isCurrentUser(userId) &&
+          request.resource.data.uid == request.auth.uid &&
+          request.resource.data.displayName is string && request.resource.data.displayName.size() <= 128 &&
+          request.resource.data.email is string && request.resource.data.email.size() <= 256 &&
+          (request.resource.data.email.matches('.*@kitsw\\.ac\\.in$') || isBootstrapAdmin()) &&
+          (request.resource.data.role in ['STUDENT', 'STAFF', 'DEPARTMENT_HEAD', 'WARDEN', 'ADMIN'] || isBootstrapAdmin())
+        )
+      );
+        
+      allow update: if isSignedIn() && (
+        isAdmin() || 
+        (isCurrentUser(userId) && request.resource.data.role == resource.data.role)
+      );
+      
+      allow delete: if isAdmin();
+    }
+
+    // COMPLAINTS COLLECTION
+    match /complaints/{complaintId} {
+      allow get: if isSignedIn() && (
+        isAdmin() || 
+        isStaff() || 
+        resource.data.studentId == request.auth.uid ||
+        resource.data.isAnonymous == true
+      );
+      
+      allow list: if isSignedIn();
+
+      allow create: if isSignedIn() && isValidId(complaintId) &&
+        request.resource.data.studentId == request.auth.uid &&
+        request.resource.data.title is string && request.resource.data.title.size() <= 256 &&
+        request.resource.data.category is string &&
+        request.resource.data.status in ['SUBMITTED', 'AI_ANALYZED'];
+
+      allow update: if isSignedIn() && (
+        isAdmin() ||
+        isStaff() ||
+        (resource.data.studentId == request.auth.uid && (
+          // Student can add feedback, or reopen
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['feedback', 'status', 'updatedAt', 'timeline'])
+        ))
+      );
+
+      allow delete: if isAdmin();
+
+      // MESSAGES SUBCOLLECTION
+      match /messages/{messageId} {
+        allow get, list: if isSignedIn() && (
+          isAdmin() || 
+          isStaff() || 
+          (!resource.data.isInternal && get(/databases/$(database)/documents/complaints/$(complaintId)).data.studentId == request.auth.uid)
+        );
+
+        allow create: if isSignedIn() && isValidId(messageId) &&
+          request.resource.data.senderId == request.auth.uid &&
+          request.resource.data.message is string && request.resource.data.message.size() <= 2048 &&
+          (request.resource.data.isInternal == false || isStaff());
+
+        allow update, delete: if isAdmin();
+      }
+    }
+
+    // DEPARTMENTS COLLECTION
+    match /departments/{departmentId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // NOTIFICATIONS COLLECTION
+    match /notifications/{notificationId} {
+      allow get, list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn();
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']);
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // ANNOUNCEMENTS COLLECTION
+    match /announcements/{announcementId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin() || isStaff();
+    }
+
+    // AUDIT LOGS COLLECTION
+    match /auditLogs/{auditLogId} {
+      allow read: if isAdmin();
+      allow create: if isSignedIn();
+      allow update, delete: if false; // Append-only immutable log
+    }
+
+    // SYSTEM SETTINGS COLLECTION
+    match /systemSettings/{settingId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+  }
+}

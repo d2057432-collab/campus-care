@@ -1,0 +1,180 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Registered user profile with role-based access information",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 256 },
+        "displayName": { "type": "string", "maxLength": 128 },
+        "role": { "type": "string", "enum": ["STUDENT", "STAFF", "DEPARTMENT_HEAD", "WARDEN", "ADMIN", "SUPER_ADMIN"] },
+        "rollNumber": { "type": "string", "maxLength": 64 },
+        "yearOfStudy": { "type": "string", "maxLength": 64 },
+        "section": { "type": "string", "maxLength": 32 },
+        "employeeId": { "type": "string", "maxLength": 64 },
+        "designation": { "type": "string", "maxLength": 128 },
+        "departmentId": { "type": "string", "maxLength": 64 },
+        "departmentName": { "type": "string", "maxLength": 128 },
+        "hostel": { "type": "string", "maxLength": 64 },
+        "roomNumber": { "type": "string", "maxLength": 32 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "emailVerified": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "displayName", "role"]
+    },
+    "Complaint": {
+      "title": "Complaint",
+      "description": "College complaint with full lifecycle, AI analysis, SLA, and resolution data",
+      "type": "object",
+      "properties": {
+        "complaintId": { "type": "string", "maxLength": 64 },
+        "title": { "type": "string", "maxLength": 256 },
+        "description": { "type": "string", "maxLength": 4096 },
+        "category": { "type": "string", "maxLength": 64 },
+        "subcategory": { "type": "string", "maxLength": 64 },
+        "location": { "type": "string", "maxLength": 128 },
+        "building": { "type": "string", "maxLength": 128 },
+        "block": { "type": "string", "maxLength": 64 },
+        "roomNumber": { "type": "string", "maxLength": 32 },
+        "departmentId": { "type": "string", "maxLength": 64 },
+        "departmentName": { "type": "string", "maxLength": 128 },
+        "priority": { "type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"] },
+        "urgency": { "type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"] },
+        "severityScore": { "type": "number" },
+        "status": { "type": "string", "enum": ["SUBMITTED", "AI_ANALYZED", "ASSIGNED", "IN_REVIEW", "IN_PROGRESS", "RESOLVED", "CLOSED", "REJECTED", "ESCALATED", "REOPENED"] },
+        "isAnonymous": { "type": "boolean" },
+        "studentId": { "type": "string", "maxLength": 128 },
+        "studentName": { "type": "string", "maxLength": 128 },
+        "studentEmail": { "type": "string", "maxLength": 256 },
+        "assignedStaffId": { "type": "string", "maxLength": 128 },
+        "assignedStaffName": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "description", "category", "status", "studentId"]
+    },
+    "ComplaintMessage": {
+      "title": "ComplaintMessage",
+      "description": "Communication message or internal staff note for a complaint",
+      "type": "object",
+      "properties": {
+        "complaintId": { "type": "string", "maxLength": 64 },
+        "senderId": { "type": "string", "maxLength": 128 },
+        "senderName": { "type": "string", "maxLength": 128 },
+        "senderRole": { "type": "string", "maxLength": 64 },
+        "message": { "type": "string", "maxLength": 2048 },
+        "isInternal": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["complaintId", "senderId", "senderName", "message", "isInternal"]
+    },
+    "Department": {
+      "title": "Department",
+      "description": "Campus administrative or operational department",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 128 },
+        "code": { "type": "string", "maxLength": 32 },
+        "description": { "type": "string", "maxLength": 512 },
+        "headId": { "type": "string", "maxLength": 128 },
+        "headName": { "type": "string", "maxLength": 128 },
+        "slaHours": { "type": "number" },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["name", "code"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "In-app notifications for users regarding complaint updates and alerts",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 256 },
+        "message": { "type": "string", "maxLength": 1024 },
+        "type": { "type": "string", "maxLength": 64 },
+        "complaintId": { "type": "string", "maxLength": 64 },
+        "isRead": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "title", "message", "type"]
+    },
+    "Announcement": {
+      "title": "Announcement",
+      "description": "Campus-wide or targeted maintenance and notice announcements",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "maxLength": 256 },
+        "content": { "type": "string", "maxLength": 4096 },
+        "category": { "type": "string", "maxLength": 64 },
+        "targetAudience": { "type": "string", "maxLength": 64 },
+        "authorName": { "type": "string", "maxLength": 128 },
+        "priority": { "type": "string", "enum": ["LOW", "NORMAL", "HIGH", "URGENT"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "content", "priority"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable audit trail of security and governance events",
+      "type": "object",
+      "properties": {
+        "actorId": { "type": "string", "maxLength": 128 },
+        "actorName": { "type": "string", "maxLength": 128 },
+        "actorRole": { "type": "string", "maxLength": 64 },
+        "action": { "type": "string", "maxLength": 128 },
+        "targetId": { "type": "string", "maxLength": 128 },
+        "targetType": { "type": "string", "maxLength": 64 },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["actorId", "action", "timestamp"]
+    },
+    "SystemSetting": {
+      "title": "SystemSetting",
+      "description": "Global college configuration settings",
+      "type": "object",
+      "properties": {
+        "allowedEmailDomain": { "type": "string", "maxLength": 128 },
+        "autoEscalationEnabled": { "type": "boolean" },
+        "duplicateThreshold": { "type": "number" }
+      },
+      "required": ["allowedEmailDomain"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles with role and department assignments"
+    },
+    "/complaints/{complaintId}": {
+      "schema": "Complaint",
+      "description": "College complaints records"
+    },
+    "/complaints/{complaintId}/messages/{messageId}": {
+      "schema": "ComplaintMessage",
+      "description": "Messages and notes attached to complaints"
+    },
+    "/departments/{departmentId}": {
+      "schema": "Department",
+      "description": "Campus departments"
+    },
+    "/notifications/{notificationId}": {
+      "schema": "Notification",
+      "description": "User notifications"
+    },
+    "/announcements/{announcementId}": {
+      "schema": "Announcement",
+      "description": "Campus notices and announcements"
+    },
+    "/auditLogs/{auditLogId}": {
+      "schema": "AuditLog",
+      "description": "Administrative audit trail logs"
+    },
+    "/systemSettings/{settingId}": {
+      "schema": "SystemSetting",
+      "description": "System configuration parameters"
+    }
+  }
+}

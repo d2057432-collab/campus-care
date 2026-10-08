@@ -1,0 +1,8 @@
+{
+  "name": "CampusCare - KITSW",
+  "description": "Smart AI-Powered College Complaint Management System for Kakatiya Institute of Technology & Science, Warangal (KITSW) — Raise it. Track it. Resolve it.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
