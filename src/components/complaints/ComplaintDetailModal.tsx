@@ -401,6 +401,93 @@ export const ComplaintDetailModal: React.FC<ComplaintDetailModalProps> = ({
 
         {/* Modal Scrollable Content */}
         <div className="p-6 overflow-y-auto flex-1 space-y-6">
+          {/* Visual Step-Based Progress Indicator: Reported -> Under Review -> In Progress -> Resolved */}
+          <div className="p-4 sm:p-5 rounded-2xl bg-slate-50/90 dark:bg-slate-800/50 border border-slate-200/80 dark:border-slate-800">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                Complaint Lifecycle Progress
+              </span>
+              <span className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400">
+                Stage:{' '}
+                {complaint.status === 'SUBMITTED'
+                  ? 'Reported'
+                  : ['AI_ANALYZED', 'IN_REVIEW', 'ASSIGNED', 'REOPENED'].includes(complaint.status)
+                  ? 'Under Review'
+                  : ['IN_PROGRESS', 'ESCALATED'].includes(complaint.status)
+                  ? 'In Progress'
+                  : ['RESOLVED', 'CLOSED'].includes(complaint.status)
+                  ? 'Resolved'
+                  : complaint.status}
+              </span>
+            </div>
+
+            {(() => {
+              const lifecycleStages = [
+                { id: 'REPORTED', label: 'Reported', sub: 'Complaint Logged' },
+                { id: 'UNDER_REVIEW', label: 'Under Review', sub: 'Triage & Review' },
+                { id: 'IN_PROGRESS', label: 'In Progress', sub: 'Active Resolution' },
+                { id: 'RESOLVED', label: 'Resolved', sub: 'Completed & Verified' },
+              ];
+              const currentIdx =
+                complaint.status === 'SUBMITTED'
+                  ? 0
+                  : ['AI_ANALYZED', 'IN_REVIEW', 'ASSIGNED', 'REOPENED'].includes(complaint.status)
+                  ? 1
+                  : ['IN_PROGRESS', 'ESCALATED'].includes(complaint.status)
+                  ? 2
+                  : ['RESOLVED', 'CLOSED'].includes(complaint.status)
+                  ? 3
+                  : 0;
+              const isCompletedAll = complaint.status === 'RESOLVED' || complaint.status === 'CLOSED';
+
+              return (
+                <div className="relative flex items-center justify-between pt-1">
+                  {/* Track Line */}
+                  <div className="absolute left-8 right-8 top-5 h-1 bg-slate-200 dark:bg-slate-700 rounded-full" />
+                  <div
+                    className="absolute left-8 top-5 h-1 bg-gradient-to-r from-indigo-600 to-emerald-500 rounded-full transition-all duration-500"
+                    style={{ width: `calc(${(currentIdx / 3) * 100}% - 3.5rem)` }}
+                  />
+
+                  {lifecycleStages.map((stage, idx) => {
+                    const isDone = idx < currentIdx || (idx === currentIdx && isCompletedAll);
+                    const isActive = idx === currentIdx && !isCompletedAll;
+
+                    return (
+                      <div key={stage.id} className="relative z-10 flex flex-col items-center text-center w-1/4">
+                        <div
+                          className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-extrabold border-2 transition-all ${
+                            isDone
+                              ? 'bg-emerald-500 border-emerald-500 text-white shadow-sm shadow-emerald-500/30'
+                              : isActive
+                              ? 'bg-indigo-600 border-indigo-600 text-white ring-4 ring-indigo-500/20'
+                              : 'bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-400'
+                          }`}
+                        >
+                          {isDone ? <CheckCircle2 className="w-4 h-4" /> : idx + 1}
+                        </div>
+                        <span
+                          className={`mt-1.5 text-xs font-bold ${
+                            isDone
+                              ? 'text-emerald-600 dark:text-emerald-400'
+                              : isActive
+                              ? 'text-indigo-600 dark:text-indigo-400'
+                              : 'text-slate-400 dark:text-slate-500'
+                          }`}
+                        >
+                          {stage.label}
+                        </span>
+                        <span className="hidden sm:block text-[10px] text-slate-400">
+                          {stage.sub}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+          </div>
+
           {activeTab === 'timeline' ? (
             <div className="space-y-6">
               {/* Meta Grid */}
@@ -683,11 +770,10 @@ export const ComplaintDetailModal: React.FC<ComplaintDetailModalProps> = ({
                         onChange={(e) => setSelectedStatus(e.target.value as ComplaintStatus)}
                         className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-semibold"
                       >
-                        <option value="SUBMITTED">1. Submitted</option>
+                        <option value="SUBMITTED">1. Reported</option>
                         <option value="IN_REVIEW">2. Under Review</option>
-                        <option value="ASSIGNED">3. Assigned to Technician</option>
-                        <option value="IN_PROGRESS">4. Work in Progress</option>
-                        <option value="RESOLVED">5. Resolved / Verified</option>
+                        <option value="IN_PROGRESS">3. In Progress</option>
+                        <option value="RESOLVED">4. Resolved</option>
                         <option value="ESCALATED">Escalated (SLA / HOD Review)</option>
                       </select>
                     </div>

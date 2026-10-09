@@ -167,8 +167,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setEnrollError(null);
     const cleanEmail = enrollEmail.trim().toLowerCase();
 
-    if (!cleanEmail.endsWith('@kitsw.ac.in') && cleanEmail !== 'd2057432@gmail.com') {
-      setEnrollError('Institutional email must end with @kitsw.ac.in');
+    if (
+      enrollRole === 'STUDENT' &&
+      !cleanEmail.endsWith('@kitsw.ac.in') &&
+      cleanEmail !== 'd2057432@gmail.com'
+    ) {
+      setEnrollError('Student institutional email must end with @kitsw.ac.in');
       return;
     }
 
@@ -493,7 +497,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const filteredUsers = useMemo(() => {
     return usersList.filter((u) => {
       const cleanEmail = (u.email || '').toLowerCase().trim();
-      const isDomainValid = cleanEmail.endsWith('@kitsw.ac.in') || cleanEmail === 'd2057432@gmail.com';
+      const isDomainValid =
+        cleanEmail.endsWith('@kitsw.ac.in') ||
+        cleanEmail === 'd2057432@gmail.com' ||
+        u.role !== 'STUDENT';
       if (!isDomainValid) return false;
 
       // Role filter

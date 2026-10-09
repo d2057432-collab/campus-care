@@ -236,8 +236,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return clean.endsWith(`@${COLLEGE_DOMAIN}`);
   };
 
-  const isDomainAuthorized = (emailStr: string): boolean => {
+  const isDomainAuthorized = (emailStr: string, role?: UserRole): boolean => {
     const clean = emailStr.trim().toLowerCase();
+    // Staff, Faculty, HOD, Warden, and Admin can use their own personal/work email (validated via ID Card & Faculty Details)
+    if (role && role !== 'STUDENT') {
+      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean);
+    }
+    // Also allow if this email is already registered in local directory as a non-student
+    const existing = getSavedProfileByEmail(clean);
+    if (existing && existing.role !== 'STUDENT') {
+      return true;
+    }
     return isCollegeDomainEmail(clean) || clean === BOOTSTRAP_ADMIN_EMAIL.toLowerCase();
   };
 
@@ -412,9 +421,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   ) => {
     const cleanEmail = email.trim().toLowerCase();
 
-    if (!isDomainAuthorized(cleanEmail)) {
+    if (!isDomainAuthorized(cleanEmail, preferredRole)) {
       throw new Error(
-        `Access restricted: Only official @${COLLEGE_DOMAIN} college email addresses are permitted.`
+        `Access restricted: Students must use an official @${COLLEGE_DOMAIN} college email address. Staff & Admins can sign in by selecting the Staff or Admin role tab.`
       );
     }
 
@@ -569,13 +578,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       section?: string;
       employeeId?: string;
       designation?: string;
+      idCardImageUrl?: string;
+      idCardVerified?: boolean;
+      idCardVerificationDetails?: string;
+      qualification?: string;
     }
   ) => {
     const cleanEmail = email.trim().toLowerCase();
 
-    if (!isDomainAuthorized(cleanEmail)) {
+    if (!isDomainAuthorized(cleanEmail, profileData.role)) {
       throw new Error(
-        `Registration restricted: Only users with an official institutional email ending in @${COLLEGE_DOMAIN} can create an account.`
+        `Registration restricted: Students must register with an official @${COLLEGE_DOMAIN} email. Staff and Admins can use their own email with ID Card verification.`
       );
     }
 
@@ -600,8 +613,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error('Student Roll Number is required for registration.');
     }
 
-    if (profileData.role !== 'STUDENT' && !profileData.employeeId) {
-      throw new Error('Employee / Faculty ID is required for Staff & Admin registration.');
+    if (profileData.role !== 'STUDENT') {
+      if (!profileData.employeeId) {
+        throw new Error('Employee / Faculty ID is required for Staff & Admin registration.');
+      }
+      if (!profileData.idCardImageUrl || !profileData.idCardVerified) {
+        throw new Error(
+          'Staff & Admin accounts require uploading and confirming your Faculty / Staff ID Card & details before account creation.'
+        );
+      }
     }
 
     // Check if already registered locally with a password
@@ -670,6 +690,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         section: profileData.section,
         employeeId: profileData.employeeId,
         designation: profileData.designation,
+        idCardImageUrl: profileData.idCardImageUrl,
+        idCardVerified: profileData.idCardVerified,
+        idCardVerificationDetails: profileData.idCardVerificationDetails,
+        qualification: profileData.qualification,
         emailVerified: true,
         createdAt: new Date().toISOString(),
       });
@@ -778,10 +802,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const requestPasswordRecoveryOtp = async (email: string, identifier?: string) => {
     const cleanEmail = email.trim().toLowerCase();
-    if (!isDomainAuthorized(cleanEmail)) {
-      throw new Error(
-        `Recovery restricted: Only official @${COLLEGE_DOMAIN} institutional email addresses are supported.`
-      );
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      throw new Error('Please enter a valid email address.');
     }
 
     const localProfile = getSavedProfileByEmail(cleanEmail);

@@ -17,11 +17,10 @@ const PROGRESS_STEPS: Array<{
   label: string;
   sublabel: string;
 }> = [
-  { id: 'SUBMITTED', label: 'Submitted', sublabel: 'Ticket filed' },
-  { id: 'IN_REVIEW', label: 'Under Review', sublabel: 'AI / HOD triage' },
-  { id: 'ASSIGNED', label: 'Assigned', sublabel: 'Technician routed' },
-  { id: 'IN_PROGRESS', label: 'Work in Progress', sublabel: 'Active repair' },
-  { id: 'RESOLVED', label: 'Resolved / Verified', sublabel: 'Proof & rating' },
+  { id: 'REPORTED', label: 'Reported', sublabel: 'Complaint filed' },
+  { id: 'UNDER_REVIEW', label: 'Under Review', sublabel: 'AI / Dept triage' },
+  { id: 'IN_PROGRESS', label: 'In Progress', sublabel: 'Active resolution' },
+  { id: 'RESOLVED', label: 'Resolved', sublabel: 'Verified & rated' },
 ];
 
 function getActiveStepIndex(status: ComplaintStatus): number {
@@ -30,16 +29,15 @@ function getActiveStepIndex(status: ComplaintStatus): number {
       return 0;
     case 'AI_ANALYZED':
     case 'IN_REVIEW':
-    case 'REOPENED':
-    case 'ESCALATED':
-      return 1;
     case 'ASSIGNED':
-      return 2;
+    case 'REOPENED':
+      return 1;
     case 'IN_PROGRESS':
-      return 3;
+    case 'ESCALATED':
+      return 2;
     case 'RESOLVED':
     case 'CLOSED':
-      return 4;
+      return 3;
     default:
       return 0;
   }
@@ -68,10 +66,10 @@ export const VisualTimeline: React.FC<{
           )}
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-5 gap-2.5">
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
           {PROGRESS_STEPS.map((step, idx) => {
-            const isCompleted = idx < activeIndex || (idx === 4 && activeIndex === 4);
-            const isCurrent = idx === activeIndex;
+            const isCompleted = idx < activeIndex || (idx === 3 && activeIndex === 3);
+            const isCurrent = idx === activeIndex && !(idx === 3 && activeIndex === 3);
 
             return (
               <div

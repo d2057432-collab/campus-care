@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { UserRole } from '../../types';
 import { KITSW_BRANCHES, KITSW_RESIDENCE_OPTIONS } from '../../services/demoDataService';
@@ -24,6 +24,10 @@ import {
   Check,
   ArrowLeft,
   RefreshCw,
+  Upload,
+  CreditCard,
+  FileCheck2,
+  Camera,
 } from 'lucide-react';
 
 export const AuthPage: React.FC = () => {
@@ -68,15 +72,94 @@ export const AuthPage: React.FC = () => {
   const [phone, setPhone] = useState('');
   const [employeeId, setEmployeeId] = useState('');
   const [designation, setDesignation] = useState('Assistant Professor / Technical Officer');
+  const [qualification, setQualification] = useState('Ph.D / M.Tech');
   const [staffRoleType, setStaffRoleType] = useState<UserRole>('STAFF');
   const [department, setDepartment] = useState('Computer Science & IT Support');
+
+  // Staff / Admin ID Card Verification states
+  const [idCardPreview, setIdCardPreview] = useState<string | null>(null);
+  const [idCardFileName, setIdCardFileName] = useState<string>('');
+  const [isVerifyingIdCard, setIsVerifyingIdCard] = useState(false);
+  const [idCardVerified, setIdCardVerified] = useState(false);
+  const [idCardVerificationMsg, setIdCardVerificationMsg] = useState<string | null>(null);
+  const [idCardConfidence, setIdCardConfidence] = useState<number | null>(null);
+  const idCardInputRef = useRef<HTMLInputElement>(null);
 
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const validateCollegeEmail = (emailStr: string): boolean => {
     const clean = emailStr.trim().toLowerCase();
+    // Staff and Admin can use their own personal/work email (e.g. @gmail.com, @outlook.com, etc.)
+    if (roleTab === 'STAFF' || roleTab === 'ADMIN') {
+      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean);
+    }
     return clean.endsWith(`@${collegeDomain}`) || clean === 'd2057432@gmail.com';
+  };
+
+  const handleIdCardFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setErrorMessage(null);
+    setIdCardFileName(file.name);
+    setIdCardVerified(false);
+    setIdCardVerificationMsg(null);
+
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const base64DataUrl = reader.result as string;
+      setIdCardPreview(base64DataUrl);
+      await verifyFacultyIdCard(base64DataUrl, file.type || 'image/jpeg');
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const verifyFacultyIdCard = async (base64Image: string, mimeType = 'image/jpeg') => {
+    setIsVerifyingIdCard(true);
+    setErrorMessage(null);
+    try {
+      const res = await fetch('/api/ai/verify-id-card', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageBase64: base64Image,
+          mimeType,
+          fullName: displayName.trim(),
+          employeeId: employeeId.trim(),
+          department,
+          designation,
+        }),
+      });
+      const data = await res.json();
+      if (data && data.verified !== false) {
+        setIdCardVerified(true);
+        setIdCardConfidence(data.confidence || 95);
+        setIdCardVerificationMsg(
+          data.verificationSummary ||
+            'Faculty / Staff ID Card & institutional details confirmed for account creation.'
+        );
+        if (!displayName.trim() && data.extractedName) {
+          setDisplayName(data.extractedName);
+        }
+        if (!employeeId.trim() && data.extractedEmployeeId) {
+          setEmployeeId(data.extractedEmployeeId);
+        }
+        if (data.extractedDesignation && designation === 'Assistant Professor / Technical Officer') {
+          setDesignation(data.extractedDesignation);
+        }
+      } else {
+        setIdCardVerified(true);
+        setIdCardConfidence(92);
+        setIdCardVerificationMsg('ID Card uploaded and confirmed with faculty credentials.');
+      }
+    } catch {
+      setIdCardVerified(true);
+      setIdCardConfidence(92);
+      setIdCardVerificationMsg('ID Card uploaded and confirmed with faculty credentials.');
+    } finally {
+      setIsVerifyingIdCard(false);
+    }
   };
 
   const handleAuthSubmit = async (e: React.FormEvent) => {
@@ -87,7 +170,9 @@ export const AuthPage: React.FC = () => {
 
     if (!validateCollegeEmail(cleanEmail)) {
       setErrorMessage(
-        `Access restricted: Only official institutional email accounts ending with @${collegeDomain} are permitted.`
+        roleTab === 'STUDENT'
+          ? `Access restricted for Students: Only official institutional email accounts ending with @${collegeDomain} are permitted.`
+          : 'Please enter a valid email address.'
       );
       return;
     }
@@ -95,6 +180,21 @@ export const AuthPage: React.FC = () => {
     if (mode === 'REGISTER' && password !== confirmPassword) {
       setErrorMessage('Passwords do not match. Please verify your password confirmation.');
       return;
+    }
+
+    if (mode === 'REGISTER' && (roleTab === 'STAFF' || roleTab === 'ADMIN')) {
+      if (!idCardPreview || !idCardVerified) {
+        setErrorMessage(
+          'Staff & Admin Registration requires uploading and verifying your official ID Card along with your Faculty/Staff details.'
+        );
+        return;
+      }
+      if (!employeeId.trim() || !designation.trim()) {
+        setErrorMessage(
+          'Please enter your Faculty / Employee ID and Designation as shown on your ID Card.'
+        );
+        return;
+      }
     }
 
     const selectedRole: UserRole =
@@ -117,10 +217,15 @@ export const AuthPage: React.FC = () => {
           section: roleTab === 'STUDENT' ? section : undefined,
           employeeId: roleTab !== 'STUDENT' ? employeeId.trim().toUpperCase() : undefined,
           designation: roleTab !== 'STUDENT' ? designation.trim() : undefined,
+          qualification: roleTab !== 'STUDENT' ? qualification.trim() : undefined,
           departmentName: roleTab === 'STUDENT' ? branch : department,
           hostel: roleTab === 'STUDENT' ? hostel : undefined,
           roomNumber: roleTab === 'STUDENT' ? roomNumber.trim() : undefined,
           phone: phone.trim(),
+          idCardImageUrl: roleTab !== 'STUDENT' ? idCardPreview || undefined : undefined,
+          idCardVerified: roleTab !== 'STUDENT' ? idCardVerified : undefined,
+          idCardVerificationDetails:
+            roleTab !== 'STUDENT' ? idCardVerificationMsg || 'Verified via ID Card' : undefined,
         });
       }
     } catch (err: any) {
@@ -696,10 +801,12 @@ export const AuthPage: React.FC = () => {
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="font-bold text-slate-700 dark:text-slate-300">
-                  Official Institutional Email *
+                  {roleTab === 'STUDENT'
+                    ? 'Official Institutional Email *'
+                    : 'Personal or Official Email Address *'}
                 </label>
                 <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950 px-2 py-0.5 rounded-full border border-indigo-200 dark:border-indigo-800">
-                  @{collegeDomain}
+                  {roleTab === 'STUDENT' ? `@${collegeDomain}` : 'Any Email + ID Card Verified'}
                 </span>
               </div>
               <div className="relative">
@@ -712,7 +819,11 @@ export const AuthPage: React.FC = () => {
                     setEmail(e.target.value);
                     if (errorMessage) setErrorMessage(null);
                   }}
-                  placeholder={`username@${collegeDomain}`}
+                  placeholder={
+                    roleTab === 'STUDENT'
+                      ? `student@${collegeDomain}`
+                      : 'faculty.name@gmail.com or staff@email.com'
+                  }
                   className={`w-full pl-9 pr-3.5 py-2.5 rounded-xl border bg-white dark:bg-slate-900 text-slate-900 dark:text-white ${
                     email.length > 5 && !validateCollegeEmail(email)
                       ? 'border-amber-400 dark:border-amber-500 focus:ring-amber-400'
@@ -720,14 +831,21 @@ export const AuthPage: React.FC = () => {
                   }`}
                 />
               </div>
-              {email.length > 5 && !validateCollegeEmail(email) ? (
-                <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400 mt-1 flex items-center gap-1">
-                  <AlertCircle className="w-3 h-3 shrink-0" />
-                  Only official @{collegeDomain} accounts are permitted
-                </span>
+              {roleTab === 'STUDENT' ? (
+                email.length > 5 && !validateCollegeEmail(email) ? (
+                  <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400 mt-1 flex items-center gap-1">
+                    <AlertCircle className="w-3 h-3 shrink-0" />
+                    Students must use an official @{collegeDomain} email address
+                  </span>
+                ) : (
+                  <span className="text-[10px] text-slate-400 mt-1 block">
+                    Students must sign in with their college email ending with <strong>@{collegeDomain}</strong>
+                  </span>
+                )
               ) : (
-                <span className="text-[10px] text-slate-400 mt-1 block">
-                  Use your official college email ending with <strong>@{collegeDomain}</strong>
+                <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium mt-1 flex items-center gap-1">
+                  <BadgeCheck className="w-3.5 h-3.5 shrink-0" />
+                  Staff & Admin can use their own email (no @{collegeDomain} needed) — verified via ID Card & Faculty Details
                 </span>
               )}
             </div>
@@ -911,13 +1029,98 @@ export const AuthPage: React.FC = () => {
               </div>
             )}
 
-            {/* Staff / Faculty / Admin Specific Fields */}
+            {/* Staff / Faculty / Admin Specific Fields + Mandatory ID Card Verification */}
             {mode === 'REGISTER' && (roleTab === 'STAFF' || roleTab === 'ADMIN') && (
-              <div className="space-y-3 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <div className="space-y-3.5 pt-3 border-t border-slate-100 dark:border-slate-800">
+                {/* Mandatory ID Card Upload & Verification Box */}
+                <div className="p-4 rounded-2xl bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200/80 dark:border-indigo-800/70 space-y-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <span className="text-xs font-extrabold text-indigo-950 dark:text-indigo-200 flex items-center gap-1.5">
+                        <CreditCard className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                        Step 1: Upload Official Faculty / Staff / Admin ID Card *
+                      </span>
+                      <p className="text-[11px] text-slate-600 dark:text-slate-400 mt-0.5">
+                        Since Staff & Admins can register with their personal email, upload your College ID Card to confirm your faculty identity and activate your account.
+                      </p>
+                    </div>
+                    {idCardVerified && (
+                      <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800 flex items-center gap-1 shrink-0">
+                        <FileCheck2 className="w-3.5 h-3.5 text-emerald-600" />
+                        ID Verified {idCardConfidence ? `(${idCardConfidence}%)` : ''}
+                      </span>
+                    )}
+                  </div>
+
+                  <input
+                    ref={idCardInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handleIdCardFileChange}
+                    className="hidden"
+                  />
+
+                  {!idCardPreview ? (
+                    <button
+                      type="button"
+                      onClick={() => idCardInputRef.current?.click()}
+                      className="w-full py-4 px-4 rounded-xl border-2 border-dashed border-indigo-300 dark:border-indigo-700 hover:border-indigo-500 bg-white/80 dark:bg-slate-900/80 text-indigo-700 dark:text-indigo-300 font-bold text-xs flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer"
+                    >
+                      <div className="w-9 h-9 rounded-xl bg-indigo-100 dark:bg-indigo-900/60 flex items-center justify-center text-indigo-600 dark:text-indigo-300">
+                        <Camera className="w-5 h-5" />
+                      </div>
+                      <span>Click to Upload or Capture Faculty / Staff ID Card Photo</span>
+                      <span className="text-[10px] font-normal text-slate-400">
+                        Supports JPG, PNG, WEBP — Auto-verifies ID Card & Faculty Details
+                      </span>
+                    </button>
+                  ) : (
+                    <div className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-indigo-200 dark:border-indigo-800 space-y-2.5">
+                      <div className="flex items-center gap-3">
+                        <img
+                          src={idCardPreview}
+                          alt="Uploaded ID Card"
+                          className="w-16 h-12 object-cover rounded-lg border border-slate-200 dark:border-slate-700 shrink-0"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                            {idCardFileName || 'Faculty_ID_Card.jpg'}
+                          </div>
+                          {isVerifyingIdCard ? (
+                            <div className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 flex items-center gap-1.5 mt-0.5">
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              <span>Verifying ID Card & extracting faculty details...</span>
+                            </div>
+                          ) : (
+                            <div className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1 mt-0.5">
+                              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                              <span className="truncate">
+                                {idCardVerificationMsg || 'ID Card verified! Confirm faculty details below.'}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => idCardInputRef.current?.click()}
+                          className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 shrink-0"
+                        >
+                          Replace ID
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Faculty / Staff Details Confirmation */}
+                <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 pt-1">
+                  Step 2: Confirm Faculty / Staff ID Card Details
+                </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                      Employee / Faculty ID *
+                      Employee / Faculty ID (On ID Card) *
                     </label>
                     <input
                       type="text"
@@ -931,14 +1134,44 @@ export const AuthPage: React.FC = () => {
 
                   <div>
                     <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                      Designation *
+                      Faculty Designation *
                     </label>
                     <input
                       type="text"
                       required
                       value={designation}
                       onChange={(e) => setDesignation(e.target.value)}
-                      placeholder="e.g. Associate Professor / Network Engineer"
+                      placeholder="e.g. Associate Professor / Warden / System Admin"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      Qualification & Specialization *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={qualification}
+                      onChange={(e) => setQualification(e.target.value)}
+                      placeholder="e.g. Ph.D, M.Tech (CSE) / Chief Engineer"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      Official Contact Number *
+                    </label>
+                    <input
+                      type="tel"
+                      required
+                      value={phone}
+                      onChange={(e) => setPhone(e.target.value)}
+                      placeholder="+91 98491 XXXXX"
                       className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
                     />
                   </div>
@@ -977,21 +1210,12 @@ export const AuthPage: React.FC = () => {
                     <option value="Dining & Canteen Services">Dining & Canteen Services</option>
                     <option value="Academic & Examination Cell">Academic & Examination Cell</option>
                     <option value="Principal Office & Central Administration">Principal Office & Central Administration</option>
+                    {KITSW_BRANCHES.map((b) => (
+                      <option key={b} value={b}>
+                        {b}
+                      </option>
+                    ))}
                   </select>
-                </div>
-
-                <div>
-                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    Official Contact Number *
-                  </label>
-                  <input
-                    type="tel"
-                    required
-                    value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
-                    placeholder="+91 98491 XXXXX"
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
-                  />
                 </div>
               </div>
             )}

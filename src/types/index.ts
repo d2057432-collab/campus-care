@@ -14,6 +14,7 @@ export interface UserProfile {
   rollNumber?: string;
   yearOfStudy?: string;
   section?: string;
+  branch?: string;
   employeeId?: string;
   designation?: string;
   departmentId?: string;
@@ -21,7 +22,12 @@ export interface UserProfile {
   hostel?: string;
   roomNumber?: string;
   phone?: string;
+  phoneNumber?: string;
   avatarUrl?: string;
+  idCardImageUrl?: string;
+  idCardVerified?: boolean;
+  idCardVerificationDetails?: string;
+  qualification?: string;
   emailVerified?: boolean;
   createdAt: string;
   updatedAt?: string;
