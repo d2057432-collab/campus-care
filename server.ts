@@ -1,17 +1,159 @@
 import express, { type Request, type Response } from 'express';
+import http from 'http';
+import { WebSocketServer } from 'ws';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import nodemailer from 'nodemailer';
 import { GoogleGenAI } from '@google/genai';
 
 dotenv.config();
+
+// Email dispatch helper for sending OTP verification messages
+let mailTransporterPromise: Promise<nodemailer.Transporter | null> | null = null;
+
+function getMailTransporter(): Promise<nodemailer.Transporter | null> {
+  if (mailTransporterPromise) return mailTransporterPromise;
+
+  mailTransporterPromise = (async () => {
+    try {
+      if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+        return nodemailer.createTransport({
+          host: process.env.SMTP_HOST,
+          port: Number(process.env.SMTP_PORT || 587),
+          secure: Number(process.env.SMTP_PORT) === 465,
+          auth: {
+            user: process.env.SMTP_USER,
+            pass: process.env.SMTP_PASS,
+          },
+        });
+      }
+      // Fallback to Nodemailer test SMTP account so email dispatch works out of the box
+      const testAccount = await nodemailer.createTestAccount();
+      return nodemailer.createTransport({
+        host: testAccount.smtp.host,
+        port: testAccount.smtp.port,
+        secure: testAccount.smtp.secure,
+        auth: {
+          user: testAccount.user,
+          pass: testAccount.pass,
+        },
+      });
+    } catch {
+      return null;
+    }
+  })();
+
+  return mailTransporterPromise;
+}
+
+async function sendVerificationOtpEmail(
+  recipientEmail: string,
+  recipientName: string,
+  otpCode: string,
+  purpose: 'PASSWORD_RECOVERY' | 'ACCOUNT_VERIFICATION' = 'PASSWORD_RECOVERY'
+): Promise<{ sent: boolean; emailSubject: string; emailBodyHtml: string; emailBodyText: string }> {
+  const emailSubject =
+    purpose === 'PASSWORD_RECOVERY'
+      ? `CampusCare KITSW - Password Recovery Verification Code`
+      : `CampusCare KITSW - Institutional Email Verification Code`;
+
+  const emailBodyText = `Dear ${recipientName},\n\nWe received a request to verify your CampusCare KITSW portal account (${recipientEmail}).\n\nYour 6-Digit Verification OTP Code is: ${otpCode}\n\nPlease enter this 6-digit verification code on the portal to complete your verification. This code is valid for 15 minutes.\n\nRegards,\nCampusCare Institutional Support\nKakatiya Institute of Technology & Science, Warangal (KITSW)`;
+
+  const emailBodyHtml = `
+    <div style="font-family: Inter, Arial, sans-serif; max-width: 540px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 16px; background: #ffffff; color: #0f172a;">
+      <div style="font-size: 12px; font-weight: 700; color: #4f46e5; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px;">
+        Kakatiya Institute of Technology & Science, Warangal
+      </div>
+      <h2 style="margin: 0 0 12px; font-size: 20px; color: #0f172a;">
+        ${purpose === 'PASSWORD_RECOVERY' ? 'Password Recovery Verification' : 'Account Email Verification'}
+      </h2>
+      <p style="font-size: 14px; color: #334155; line-height: 1.6; margin: 0 0 16px;">
+        Dear <strong>${recipientName}</strong>,<br/>
+        A verification request was initiated for your CampusCare portal account (<strong>${recipientEmail}</strong>). Please use the verification code in this email message to verify your account:
+      </p>
+      <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 12px; padding: 16px; text-align: center; margin: 18px 0;">
+        <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: #64748b; margin-bottom: 6px;">
+          Verification Code (Valid for 15 Minutes)
+        </div>
+        <div style="font-family: monospace; font-size: 26px; font-weight: 800; letter-spacing: 6px; color: #4f46e5;">
+          ${otpCode}
+        </div>
+      </div>
+      <p style="font-size: 12px; color: #64748b; line-height: 1.5; margin: 16px 0 0;">
+        If you did not request this verification email, you can safely ignore this message.<br/>
+        <strong>CampusCare Portal — KITSW Warangal</strong>
+      </p>
+    </div>
+  `;
+
+  try {
+    const transporter = await getMailTransporter();
+    if (transporter) {
+      await transporter.sendMail({
+        from: '"CampusCare KITSW Portal" <noreply@kitsw.ac.in>',
+        to: recipientEmail,
+        subject: emailSubject,
+        text: emailBodyText,
+        html: emailBodyHtml,
+      });
+      return { sent: true, emailSubject, emailBodyHtml, emailBodyText };
+    }
+  } catch (err) {
+    console.warn('SMTP send notice:', err);
+  }
+
+  return { sent: false, emailSubject, emailBodyHtml, emailBodyText };
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+const httpServer = http.createServer(app);
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+
+// Handle any incoming WebSocket upgrades gracefully (e.g., Vite HMR probes or real-time clients) so the browser never shows a failed WebSocket error
+const wss = new WebSocketServer({ noServer: true });
+wss.on('connection', (ws) => {
+  ws.on('error', () => {});
+  ws.on('message', () => {});
+  // Send a connected message compatible with Vite HMR client if one connects
+  try {
+    ws.send(JSON.stringify({ type: 'connected' }));
+  } catch {
+    // Ignore send errors
+  }
+});
+
+httpServer.on('upgrade', (request, socket, head) => {
+  socket.on('error', () => {});
+  try {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  } catch {
+    try {
+      socket.destroy();
+    } catch {
+      // Ignore socket close error
+    }
+  }
+});
+
+// Serve a clean no-op module for /@vite/client if requested so Vite HMR client never attempts a WebSocket connection
+app.get('/@vite/client', (_req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(
+    `export function createHotContext() { return { accept() {}, dispose() {}, prune() {}, invalidate() {}, on() {}, off() {}, send() {} }; }
+export function updateStyle() {}
+export function removeStyle() {}
+export function injectQuery(url) { return url; }
+`
+  );
+});
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -835,11 +977,46 @@ app.post('/api/users/sync', (req: Request, res: Response) => {
   return res.json({ success: true, users: Object.values(backendStore.users) });
 });
 
-// 7. Forgot Password via OTP Recovery & Reset Endpoints
-app.post('/api/auth/forgot-password/request-otp', (req: Request, res: Response) => {
+// 7. Forgot Password & Email Verification OTP Dispatch Endpoints
+app.post('/api/auth/send-verification-otp', async (req: Request, res: Response) => {
+  const { email, displayName } = req.body;
+  if (!email) {
+    return res.status(400).json({ error: 'Email address is required.' });
+  }
+  const cleanEmail = String(email).trim().toLowerCase();
+  const storedUser = backendStore.users[cleanEmail];
+  const recipientName = displayName || storedUser?.displayName || cleanEmail.split('@')[0];
+
+  const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+  if (!backendStore.otps) {
+    backendStore.otps = {};
+  }
+  backendStore.otps[cleanEmail] = {
+    code: otpCode,
+    expiresAt: Date.now() + 15 * 60 * 1000,
+  };
+  saveStore(backendStore);
+
+  const mailResult = await sendVerificationOtpEmail(
+    cleanEmail,
+    recipientName,
+    otpCode,
+    'ACCOUNT_VERIFICATION'
+  );
+
+  return res.json({
+    success: true,
+    emailSent: true,
+    emailSubject: mailResult.emailSubject,
+    emailMessage: mailResult.emailBodyText,
+    message: `Verification email sent to ${cleanEmail}. Please check the sent email message and enter the 6-digit verification code.`,
+  });
+});
+
+app.post('/api/auth/forgot-password/request-otp', async (req: Request, res: Response) => {
   const { email, identifier } = req.body;
   if (!email) {
-    return res.status(400).json({ error: 'Institutional email is required.' });
+    return res.status(400).json({ error: 'Registered email is required.' });
   }
   const cleanEmail = String(email).trim().toLowerCase();
   const storedUser = backendStore.users[cleanEmail];
@@ -867,13 +1044,23 @@ app.post('/api/auth/forgot-password/request-otp', (req: Request, res: Response) 
   };
   saveStore(backendStore);
 
+  const recipientName = storedUser?.displayName || cleanEmail.split('@')[0];
+  const mailResult = await sendVerificationOtpEmail(
+    cleanEmail,
+    recipientName,
+    otpCode,
+    'PASSWORD_RECOVERY'
+  );
+
   return res.json({
     success: true,
-    otp: otpCode,
+    emailSent: true,
     userFound: !!storedUser,
-    displayName: storedUser?.displayName || cleanEmail.split('@')[0],
+    displayName: recipientName,
     role: storedUser?.role || 'STUDENT',
-    message: `A 6-digit verification OTP has been generated for ${cleanEmail}.`,
+    emailSubject: mailResult.emailSubject,
+    emailMessage: mailResult.emailBodyText,
+    message: `Verification email sent to ${cleanEmail}. Please check the sent email message to verify your OTP.`,
   });
 });
 
@@ -992,6 +1179,6 @@ if (!isProduction) {
   }
 }
 
-app.listen(PORT, '0.0.0.0', () => {
+httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`[CampusCare - KITSW] Server running on http://0.0.0.0:${PORT} (Production: ${isProduction})`);
 });

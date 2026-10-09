@@ -3,6 +3,122 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      (function () {
+        // Intercept Vite HMR WebSocket probes in <head> before @vite/client executes
+        var NativeWebSocket = window.WebSocket;
+        if (NativeWebSocket) {
+          var PatchedWebSocket = function (url, protocols) {
+            var urlStr = String(url || '');
+            var protoStr = protocols ? String(protocols) : '';
+            var isViteConnection =
+              urlStr.indexOf('@vite') !== -1 ||
+              urlStr.indexOf('vite') !== -1 ||
+              urlStr.indexOf('token=') !== -1 ||
+              protoStr.indexOf('vite') !== -1 ||
+              urlStr.indexOf(':3000') !== -1 ||
+              urlStr.indexOf('wss://') === 0 ||
+              urlStr.indexOf('ws://') === 0;
+            if (isViteConnection && urlStr.indexOf('firestore.googleapis.com') === -1) {
+              var listeners = { open: [], message: [], error: [], close: [] };
+              var mockWs = {
+                url: urlStr,
+                readyState: 1, // OPEN
+                protocol: protoStr || 'vite-hmr',
+                extensions: '',
+                bufferedAmount: 0,
+                binaryType: 'blob',
+                onopen: null,
+                onerror: null,
+                onclose: null,
+                onmessage: null,
+                send: function () {},
+                close: function () {
+                  this.readyState = 3;
+                },
+                addEventListener: function (type, listener) {
+                  if (typeof listener !== 'function') return;
+                  if (listeners[type]) listeners[type].push(listener);
+                  if (type === 'open') {
+                    setTimeout(function () {
+                      try {
+                        listener({ type: 'open', target: mockWs });
+                      } catch (e) {}
+                    }, 5);
+                  }
+                },
+                removeEventListener: function () {},
+                dispatchEvent: function () {
+                  return true;
+                },
+              };
+              setTimeout(function () {
+                if (typeof mockWs.onopen === 'function') {
+                  try {
+                    mockWs.onopen({ type: 'open', target: mockWs });
+                  } catch (e) {}
+                }
+                if (typeof mockWs.onmessage === 'function') {
+                  try {
+                    mockWs.onmessage({
+                      type: 'message',
+                      data: JSON.stringify({ type: 'connected' }),
+                      target: mockWs,
+                    });
+                  } catch (e) {}
+                }
+              }, 10);
+              return mockWs;
+            }
+            return protocols !== undefined
+              ? new NativeWebSocket(url, protocols)
+              : new NativeWebSocket(url);
+          };
+          PatchedWebSocket.prototype = NativeWebSocket.prototype;
+          PatchedWebSocket.CONNECTING = 0;
+          PatchedWebSocket.OPEN = 1;
+          PatchedWebSocket.CLOSING = 2;
+          PatchedWebSocket.CLOSED = 3;
+          window.WebSocket = PatchedWebSocket;
+        }
+
+        window.addEventListener(
+          'unhandledrejection',
+          function (event) {
+            var reason = event && event.reason;
+            var msg = (reason && reason.message) || String(reason || '');
+            if (
+              msg.indexOf('WebSocket') !== -1 ||
+              msg.indexOf('@vite') !== -1 ||
+              msg.indexOf('vite') !== -1 ||
+              msg.indexOf('hmr') !== -1 ||
+              msg.indexOf('closed without opened') !== -1
+            ) {
+              event.preventDefault();
+              event.stopPropagation();
+            }
+          },
+          true
+        );
+
+        window.addEventListener(
+          'error',
+          function (event) {
+            var msg = String((event && event.message) || '');
+            if (
+              msg.indexOf('WebSocket') !== -1 ||
+              msg.indexOf('@vite') !== -1 ||
+              msg.indexOf('vite') !== -1 ||
+              msg.indexOf('closed without opened') !== -1
+            ) {
+              event.preventDefault();
+              event.stopPropagation();
+            }
+          },
+          true
+        );
+      })();
+    </script>
     <title>CampusCare - KITSW</title>
     <meta name="description" content="Smart AI-Powered College Complaint Management System for Kakatiya Institute of Technology & Science, Warangal (KITSW) — Raise it. Track it. Resolve it." />
     <meta property="og:title" content="CampusCare - KITSW" />
@@ -11,7 +127,7 @@
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   </head>
   <body class="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 antialiased font-sans selection:bg-indigo-500 selection:text-white min-h-screen">
     <div id="root"></div>

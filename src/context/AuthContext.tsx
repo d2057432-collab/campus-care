@@ -224,10 +224,11 @@ interface AuthContextType {
     email: string,
     identifier?: string
   ) => Promise<{
-    otp: string;
     userFound: boolean;
     displayName: string;
     role: UserRole;
+    emailSubject?: string;
+    emailMessage?: string;
     message: string;
   }>;
   verifyPasswordRecoveryOtp: (
@@ -777,11 +778,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const sendVerificationEmail = async () => {
     const email = (currentUser?.email || userProfile?.email || '').toLowerCase().trim();
-    const newOtp = Math.floor(100000 + Math.random() * 900000).toString();
-    setActiveOtpCode(newOtp);
-    localStorage.setItem('kitsw_current_otp', newOtp);
-    if (email) {
-      localStorage.setItem(`otp_${email}`, newOtp);
+    const displayName = userProfile?.displayName || currentUser?.displayName || email.split('@')[0];
+
+    try {
+      await fetch('/api/auth/send-verification-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, displayName }),
+      });
+    } catch {
+      // Ignore network fallback
     }
 
     if (currentUser) {
@@ -796,9 +802,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const verifyWithCode = async (inputCode: string): Promise<boolean> => {
     const cleanInput = inputCode.trim();
     const email = (currentUser?.email || userProfile?.email || '').toLowerCase().trim();
-    const storedOtp = localStorage.getItem(`otp_${email}`) || activeOtpCode || '849201';
+    const storedOtp = localStorage.getItem(`otp_${email}`) || activeOtpCode;
 
-    if (cleanInput === storedOtp || cleanInput === '123456' || cleanInput === '849201') {
+    let backendVerified = false;
+    if (email) {
+      try {
+        const res = await fetch('/api/auth/forgot-password/verify-otp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, otp: cleanInput }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          backendVerified = !!data.verified;
+        }
+      } catch {
+        // Fallback to local verification
+      }
+    }
+
+    if (backendVerified || (storedOtp && cleanInput === storedOtp)) {
       setIsEmailVerified(true);
       if (email) {
         localStorage.setItem(`verified_${email}`, 'true');
@@ -884,13 +907,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    // Generate fallback 6-digit OTP
-    let generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
     let userFound = !!localProfile;
     let displayName = localProfile?.displayName || cleanEmail.split('@')[0];
     let role: UserRole = localProfile?.role || inferRoleFromEmail(cleanEmail);
+    let emailSubject = 'CampusCare KITSW - Password Recovery Verification Code';
+    let emailMessage = '';
 
-    // Request OTP from backend and sync
+    // Request OTP email dispatch from backend
     try {
       const res = await fetch('/api/auth/forgot-password/request-otp', {
         method: 'POST',
@@ -901,9 +924,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!res.ok && data?.error) {
         throw new Error(data.error);
       }
-      if (data?.otp) {
-        generatedOtp = String(data.otp);
-      }
       if (data?.userFound) {
         userFound = true;
       }
@@ -913,26 +933,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (data?.role) {
         role = data.role;
       }
+      if (data?.emailSubject) {
+        emailSubject = data.emailSubject;
+      }
+      if (data?.emailMessage) {
+        emailMessage = data.emailMessage;
+      }
     } catch (err: any) {
       if (err?.message && err.message.includes('does not match')) {
         throw err;
       }
     }
 
-    // Also trigger Firebase password reset email in background if account exists in Firebase
+    // Trigger Firebase password reset email in background if account exists in Firebase
     sendPasswordResetEmail(auth, cleanEmail).catch(() => {});
 
-    // Persist OTP locally for verification
-    setActiveOtpCode(generatedOtp);
-    localStorage.setItem('kitsw_current_otp', generatedOtp);
-    localStorage.setItem(`reset_otp_${cleanEmail}`, generatedOtp);
-
     return {
-      otp: generatedOtp,
       userFound,
       displayName,
       role,
-      message: `A 6-digit verification OTP has been sent to ${cleanEmail}.`,
+      emailSubject,
+      emailMessage,
+      message: `Verification email sent to ${cleanEmail}. Please check the sent email message to verify your OTP.`,
     };
   };
 

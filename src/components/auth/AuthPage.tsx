@@ -48,7 +48,9 @@ export const AuthPage: React.FC = () => {
   const [forgotStep, setForgotStep] = useState<'REQUEST_OTP' | 'VERIFY_OTP' | 'RECOVERED'>('REQUEST_OTP');
   const [recoveryIdentifier, setRecoveryIdentifier] = useState('');
   const [otpInput, setOtpInput] = useState('');
-  const [dispatchedOtp, setDispatchedOtp] = useState<string | null>(null);
+  const [sentEmailSubject, setSentEmailSubject] = useState<string>('');
+  const [sentEmailMessage, setSentEmailMessage] = useState<string>('');
+  const [showSentEmailModal, setShowSentEmailModal] = useState<boolean>(false);
   const [recoveredPassword, setRecoveredPassword] = useState<string | null>(null);
   const [recoveredUserName, setRecoveredUserName] = useState<string>('');
   const [newResetPassword, setNewResetPassword] = useState('');
@@ -281,7 +283,9 @@ export const AuthPage: React.FC = () => {
     setErrorMessage(null);
     setSuccessMessage(null);
     setOtpInput('');
-    setDispatchedOtp(null);
+    setSentEmailSubject('');
+    setSentEmailMessage('');
+    setShowSentEmailModal(false);
     setRecoveredPassword(null);
     setNewResetPassword('');
     setConfirmResetPassword('');
@@ -301,12 +305,14 @@ export const AuthPage: React.FC = () => {
     setIsLoading(true);
     try {
       const result = await requestPasswordRecoveryOtp(cleanEmail, recoveryIdentifier.trim() || undefined);
-      setDispatchedOtp(result.otp);
       setRecoveredUserName(result.displayName || cleanEmail.split('@')[0]);
+      setSentEmailSubject(result.emailSubject || 'CampusCare KITSW - Password Recovery Verification Code');
+      setSentEmailMessage(result.emailMessage || '');
+      setShowSentEmailModal(false);
       setForgotStep('VERIFY_OTP');
-      setSuccessMessage(`6-digit OTP generated for ${cleanEmail}. Enter the OTP below to view or reset your password.`);
+      setSuccessMessage(`Verification email sent to ${cleanEmail}. Please check the sent email message and enter the 6-digit verification code below.`);
     } catch (err: any) {
-      setErrorMessage(sanitizeDisplayError(err.message || 'Failed to generate OTP. Please verify your email.'));
+      setErrorMessage(sanitizeDisplayError(err.message || 'Failed to send verification email. Please verify your email.'));
     } finally {
       setIsLoading(false);
     }
@@ -588,49 +594,63 @@ export const AuthPage: React.FC = () => {
 
               {forgotStep === 'VERIFY_OTP' && (
                 <form onSubmit={handleVerifyOtp} className="space-y-4">
-                  {/* Live OTP Dispatch Box for College Portal */}
-                  {dispatchedOtp && (
-                    <div className="p-4 rounded-2xl bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800 space-y-2.5">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-700 dark:text-indigo-300 flex items-center gap-1.5">
-                          <BadgeCheck className="w-4 h-4 text-indigo-600" />
-                          KITSW Security OTP Dispatched
-                        </span>
-                        <button
-                          type="button"
-                          onClick={handleRequestOtp}
-                          className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1"
-                        >
-                          <RefreshCw className="w-3 h-3" />
-                          Resend OTP
-                        </button>
-                      </div>
-                      <p className="text-[11px] text-slate-600 dark:text-slate-300">
-                        Account: <strong>{recoveredUserName}</strong> ({email})
-                      </p>
-                      <div className="flex items-center justify-between bg-white dark:bg-slate-900 px-3.5 py-2.5 rounded-xl border border-indigo-200 dark:border-indigo-800">
-                        <div>
-                          <span className="text-[10px] text-slate-400 block uppercase font-bold">
-                            Your 6-Digit Verification OTP
-                          </span>
-                          <span className="text-lg font-mono font-extrabold tracking-widest text-indigo-600 dark:text-indigo-400">
-                            {dispatchedOtp}
-                          </span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setOtpInput(dispatchedOtp)}
-                          className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] transition-colors"
-                        >
-                          Auto-Fill OTP
-                        </button>
-                      </div>
+                  {/* Sent Email Confirmation Notice (OTP is NOT shown on the form) */}
+                  <div className="p-4 rounded-2xl bg-indigo-50/70 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-700 dark:text-indigo-300 flex items-center gap-1.5">
+                        <Mail className="w-4 h-4 text-indigo-600" />
+                        Verification Email Sent
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleRequestOtp}
+                        className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1"
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                        Resend Email
+                      </button>
                     </div>
-                  )}
+                    <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                      We sent a verification email message to <strong>{email}</strong> ({recoveredUserName}). Please open the sent email message and enter the 6-digit verification code below.
+                    </p>
+                    {sentEmailMessage && (
+                      <div className="pt-1">
+                        <button
+                          type="button"
+                          onClick={() => setShowSentEmailModal(!showSentEmailModal)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-indigo-200 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 font-bold text-[11px] hover:bg-indigo-50 dark:hover:bg-slate-800 transition-colors"
+                        >
+                          <Mail className="w-3.5 h-3.5" />
+                          <span>{showSentEmailModal ? 'Hide Sent Email Message' : 'Open Sent Email Message'}</span>
+                        </button>
+                      </div>
+                    )}
+                    {showSentEmailModal && sentEmailMessage && (
+                      <div className="mt-2 p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-left space-y-2 shadow-inner">
+                        <div className="pb-2 border-b border-slate-100 dark:border-slate-800 text-[11px] space-y-0.5">
+                          <div>
+                            <span className="text-slate-400 font-semibold">From:</span>{' '}
+                            <span className="font-bold text-slate-700 dark:text-slate-200">CampusCare KITSW Portal &lt;noreply@kitsw.ac.in&gt;</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-400 font-semibold">To:</span>{' '}
+                            <span className="font-mono text-slate-700 dark:text-slate-200">{email}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-400 font-semibold">Subject:</span>{' '}
+                            <span className="font-bold text-slate-800 dark:text-slate-100">{sentEmailSubject}</span>
+                          </div>
+                        </div>
+                        <pre className="whitespace-pre-wrap font-sans text-[11px] text-slate-700 dark:text-slate-300 leading-relaxed">
+                          {sentEmailMessage}
+                        </pre>
+                      </div>
+                    )}
+                  </div>
 
                   <div>
                     <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                      Enter 6-Digit OTP Code *
+                      Enter 6-Digit Verification Code from Email *
                     </label>
                     <input
                       type="text"
@@ -638,7 +658,7 @@ export const AuthPage: React.FC = () => {
                       maxLength={6}
                       value={otpInput}
                       onChange={(e) => setOtpInput(e.target.value.replace(/[^0-9]/g, ''))}
-                      placeholder="Enter 6-digit OTP (e.g. 482910)"
+                      placeholder="Enter 6-digit code from sent email"
                       className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-base tracking-widest text-center font-bold"
                     />
                   </div>

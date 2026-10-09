@@ -20,11 +20,9 @@ export const EmailVerificationNotice: React.FC = () => {
   const {
     currentUser,
     userProfile,
-    activeOtpCode,
     verifyWithCode,
     sendVerificationEmail,
     checkEmailVerification,
-    simulateVerifyEmail,
     logout,
     collegeDomain,
   } = useAuth();
@@ -33,7 +31,9 @@ export const EmailVerificationNotice: React.FC = () => {
   const [verifyingOtp, setVerifyingOtp] = useState(false);
   const [resending, setResending] = useState(false);
   const [checking, setChecking] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [sentEmailSubject, setSentEmailSubject] = useState('CampusCare KITSW - Institutional Email Verification Code');
+  const [sentEmailMessage, setSentEmailMessage] = useState('');
+  const [showSentEmail, setShowSentEmail] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const displayEmail = currentUser?.email || userProfile?.email || `student@${collegeDomain}`;
@@ -43,7 +43,7 @@ export const EmailVerificationNotice: React.FC = () => {
     if (!code || code.length < 6) {
       setFeedback({
         type: 'error',
-        text: 'Please enter the 6-digit verification code.',
+        text: 'Please enter the 6-digit verification code from your sent email.',
       });
       return;
     }
@@ -60,7 +60,7 @@ export const EmailVerificationNotice: React.FC = () => {
       } else {
         setFeedback({
           type: 'error',
-          text: 'Invalid verification code. Please check the code or click "Auto-fill Code" below.',
+          text: 'Invalid verification code. Please check the 6-digit code in the sent email message and try again.',
         });
       }
     } catch (err: any) {
@@ -78,14 +78,25 @@ export const EmailVerificationNotice: React.FC = () => {
     setFeedback(null);
     try {
       await sendVerificationEmail();
+      const res = await fetch('/api/auth/send-verification-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: displayEmail,
+          displayName: userProfile?.displayName || currentUser?.displayName || displayEmail.split('@')[0],
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data?.emailSubject) setSentEmailSubject(data.emailSubject);
+      if (data?.emailMessage) setSentEmailMessage(data.emailMessage);
       setFeedback({
         type: 'success',
-        text: `A new verification email was triggered and a fresh activation code (${activeOtpCode}) has been generated.`,
+        text: `Verification email sent to ${displayEmail}. Please check the sent email message for your 6-digit verification code.`,
       });
     } catch (err: any) {
       setFeedback({
         type: 'error',
-        text: err?.message || 'Unable to dispatch verification link right now.',
+        text: err?.message || 'Unable to send verification email right now.',
       });
     } finally {
       setResending(false);
@@ -100,7 +111,7 @@ export const EmailVerificationNotice: React.FC = () => {
       if (!verified) {
         setFeedback({
           type: 'error',
-          text: 'Email not verified by link yet. If your college inbox delayed the email, use the 6-digit activation code below.',
+          text: 'Email not verified yet. Please enter the 6-digit verification code from the sent email message.',
         });
       }
     } catch (err: any) {
@@ -111,12 +122,6 @@ export const EmailVerificationNotice: React.FC = () => {
     } finally {
       setChecking(false);
     }
-  };
-
-  const handleCopyCode = () => {
-    navigator.clipboard.writeText(activeOtpCode);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
   };
 
   return (
@@ -149,15 +154,40 @@ export const EmailVerificationNotice: React.FC = () => {
             {displayEmail}
           </div>
 
-          {/* Why Email is Not Coming Notice */}
-          <div className="p-3.5 rounded-2xl bg-amber-50/80 dark:bg-amber-950/40 border border-amber-200/80 dark:border-amber-800/60 text-left text-xs space-y-1.5">
-            <div className="flex items-center gap-1.5 font-bold text-amber-900 dark:text-amber-300 text-[11px]">
-              <Info className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-              <span>Did not receive the message in your inbox?</span>
+          {/* Sent Email Notice */}
+          <div className="p-3.5 rounded-2xl bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-200/80 dark:border-indigo-800/60 text-left text-xs space-y-2">
+            <div className="flex items-center gap-1.5 font-bold text-indigo-900 dark:text-indigo-300 text-[11px]">
+              <Info className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+              <span>Check Your Sent Verification Email</span>
             </div>
-            <p className="text-[11px] text-amber-800 dark:text-amber-400 leading-relaxed">
-              Institutional spam filters or external mail delays frequently hold automated messages. You can activate your account immediately using the <strong>6-digit activation code</strong> below.
+            <p className="text-[11px] text-indigo-800 dark:text-indigo-300 leading-relaxed">
+              A verification email message containing your 6-digit verification code has been sent to <strong>{displayEmail}</strong>. Enter the code from the email message below to verify your account.
             </p>
+            {sentEmailMessage && (
+              <div className="pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowSentEmail(!showSentEmail)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-indigo-200 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 font-bold text-[11px] hover:bg-indigo-50 dark:hover:bg-slate-800 transition-colors"
+                >
+                  <MailCheck className="w-3.5 h-3.5" />
+                  <span>{showSentEmail ? 'Hide Sent Email Message' : 'Open Sent Email Message'}</span>
+                </button>
+              </div>
+            )}
+            {showSentEmail && sentEmailMessage && (
+              <div className="mt-2 p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-left space-y-2">
+                <div className="pb-2 border-b border-slate-100 dark:border-slate-800 text-[11px] space-y-0.5">
+                  <div>
+                    <span className="text-slate-400 font-semibold">Subject:</span>{' '}
+                    <span className="font-bold text-slate-800 dark:text-slate-100">{sentEmailSubject}</span>
+                  </div>
+                </div>
+                <pre className="whitespace-pre-wrap font-sans text-[11px] text-slate-700 dark:text-slate-300 leading-relaxed">
+                  {sentEmailMessage}
+                </pre>
+              </div>
+            )}
           </div>
 
           {/* 6-Digit OTP Code Section */}
@@ -165,22 +195,8 @@ export const EmailVerificationNotice: React.FC = () => {
             <div className="flex items-center justify-between">
               <label className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
                 <KeyRound className="w-3.5 h-3.5 text-indigo-600" />
-                <span>Enter 6-Digit Activation Code:</span>
+                <span>Enter 6-Digit Code from Sent Email:</span>
               </label>
-
-              {/* Activation Code Quick Assist Badge */}
-              <div className="flex items-center gap-1">
-                <span className="text-[10px] text-slate-400 font-medium">Your Code:</span>
-                <button
-                  type="button"
-                  onClick={handleCopyCode}
-                  className="font-mono text-xs font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950 px-2 py-0.5 rounded-lg border border-indigo-200 dark:border-indigo-800 flex items-center gap-1 hover:bg-indigo-100 transition-colors"
-                  title="Click to copy activation code"
-                >
-                  <span>{activeOtpCode}</span>
-                  {copied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3 text-indigo-500" />}
-                </button>
-              </div>
             </div>
 
             <div className="flex gap-2">
@@ -189,7 +205,7 @@ export const EmailVerificationNotice: React.FC = () => {
                 maxLength={6}
                 value={otpInput}
                 onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, ''))}
-                placeholder="e.g. 849201"
+                placeholder="Enter 6-digit code"
                 className="flex-1 px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-center font-mono font-bold text-sm tracking-widest text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
               />
               <button
@@ -200,19 +216,6 @@ export const EmailVerificationNotice: React.FC = () => {
               >
                 {verifyingOtp ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
                 <span>Verify Code</span>
-              </button>
-            </div>
-
-            <div className="flex justify-end">
-              <button
-                type="button"
-                onClick={() => {
-                  setOtpInput(activeOtpCode);
-                  handleVerifyOtp(activeOtpCode);
-                }}
-                className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1"
-              >
-                <span>Auto-fill code ({activeOtpCode}) & activate</span>
               </button>
             </div>
           </div>
@@ -237,14 +240,6 @@ export const EmailVerificationNotice: React.FC = () => {
 
           {/* Alternative Secondary Actions */}
           <div className="space-y-2 pt-1">
-            <button
-              onClick={simulateVerifyEmail}
-              className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition-colors shadow-sm flex items-center justify-center gap-2"
-            >
-              <Sparkles className="w-4 h-4 text-emerald-200" />
-              <span>Instant Activate Account (One-Click)</span>
-            </button>
-
             <div className="grid grid-cols-2 gap-2">
               <button
                 onClick={handleResend}
@@ -252,7 +247,7 @@ export const EmailVerificationNotice: React.FC = () => {
                 className="py-2 px-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold text-xs transition-colors flex items-center justify-center gap-1.5"
               >
                 {resending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-                <span>Resend Email</span>
+                <span>Send / Resend Email</span>
               </button>
 
               <button
