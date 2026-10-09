@@ -796,14 +796,21 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
 
   if (!storedUser) {
     return res.status(404).json({
-      error: 'No registered account found for this email. Please register your college details first.',
+      error: 'No registered account found for this email. Please register your college account first.',
       code: 'USER_NOT_FOUND',
     });
   }
 
-  if (storedPassword && storedPassword !== String(password)) {
+  if (!storedPassword) {
     return res.status(401).json({
-      error: 'Incorrect password. Please verify your password and try again.',
+      error: 'Wrong password or password not set yet. Please use "Forgot Password" with OTP or register your password.',
+      code: 'PASSWORD_NOT_SET',
+    });
+  }
+
+  if (storedPassword !== String(password)) {
+    return res.status(401).json({
+      error: 'Wrong password! Please enter the correct password and try again.',
       code: 'INVALID_PASSWORD',
     });
   }

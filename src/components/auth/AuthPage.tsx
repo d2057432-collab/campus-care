@@ -88,6 +88,27 @@ export const AuthPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  const sanitizeDisplayError = (rawError: string): string => {
+    if (!rawError) return 'Wrong password or invalid credentials! Please try again.';
+    if (
+      rawError.includes('auth/wrong-password') ||
+      rawError.includes('auth/invalid-credential') ||
+      rawError.includes('auth/invalid-login-credentials')
+    ) {
+      return 'Wrong password! Please enter the correct password and try again.';
+    }
+    if (rawError.includes('auth/user-not-found')) {
+      return 'Account not found for this email. Please click "Register Account" first.';
+    }
+    if (rawError.includes('auth/email-already-in-use')) {
+      return 'This email is already registered. Please switch to Sign In and enter your password.';
+    }
+    if (rawError.includes('Firebase:') || rawError.includes('auth/')) {
+      return 'Wrong email or password! Please check your credentials and try again.';
+    }
+    return rawError;
+  };
+
   const validateCollegeEmail = (emailStr: string): boolean => {
     const clean = emailStr.trim().toLowerCase();
     // Staff and Admin can use their own personal/work email (e.g. @gmail.com, @outlook.com, etc.)
@@ -229,7 +250,7 @@ export const AuthPage: React.FC = () => {
         });
       }
     } catch (err: any) {
-      setErrorMessage(err.message || 'Authentication failed. Please verify credentials.');
+      setErrorMessage(sanitizeDisplayError(err.message || 'Wrong email or password. Please verify your credentials.'));
     } finally {
       setIsLoading(false);
     }
@@ -248,7 +269,7 @@ export const AuthPage: React.FC = () => {
     try {
       await signInWithGoogle(selectedRole);
     } catch (err: any) {
-      setErrorMessage(err.message || 'Google Sign-In failed. Please use your email and password.');
+      setErrorMessage(sanitizeDisplayError(err.message || 'Google Sign-In failed. Please use your email and password.'));
     } finally {
       setIsLoading(false);
     }
@@ -272,10 +293,8 @@ export const AuthPage: React.FC = () => {
     setSuccessMessage(null);
 
     const cleanEmail = email.trim().toLowerCase();
-    if (!validateCollegeEmail(cleanEmail)) {
-      setErrorMessage(
-        `Recovery restricted: Please enter a valid institutional email ending with @${collegeDomain}.`
-      );
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      setErrorMessage('Please enter a valid registered email address.');
       return;
     }
 
@@ -287,7 +306,7 @@ export const AuthPage: React.FC = () => {
       setForgotStep('VERIFY_OTP');
       setSuccessMessage(`6-digit OTP generated for ${cleanEmail}. Enter the OTP below to view or reset your password.`);
     } catch (err: any) {
-      setErrorMessage(err.message || 'Failed to generate OTP. Please verify your institutional email.');
+      setErrorMessage(sanitizeDisplayError(err.message || 'Failed to generate OTP. Please verify your email.'));
     } finally {
       setIsLoading(false);
     }

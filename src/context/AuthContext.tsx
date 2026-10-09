@@ -128,6 +128,66 @@ function inferRoleFromEmail(cleanEmail: string, preferredRole?: UserRole): UserR
   return 'STUDENT';
 }
 
+// Sanitize raw Firebase error strings so users NEVER see "Firebase: Error (auth/...)"
+function formatFriendlyAuthError(err: any, mode: 'LOGIN' | 'REGISTER' | 'GOOGLE' = 'LOGIN'): string {
+  const code = String(err?.code || '').toLowerCase();
+  const rawMsg = String(err?.message || '');
+
+  // If it's already a clean custom error without "Firebase:" or "(auth/..."
+  if (rawMsg && !rawMsg.includes('Firebase:') && !rawMsg.includes('auth/')) {
+    return rawMsg;
+  }
+
+  if (
+    code.includes('wrong-password') ||
+    code.includes('invalid-credential') ||
+    code.includes('invalid-login-credentials') ||
+    rawMsg.includes('wrong-password') ||
+    rawMsg.includes('invalid-credential') ||
+    rawMsg.includes('invalid-login-credentials')
+  ) {
+    return 'Wrong password or invalid credentials! Please check your password and try again.';
+  }
+
+  if (code.includes('user-not-found') || rawMsg.includes('user-not-found')) {
+    return 'Account not found for this email. Please click "Register Account" to create your account first.';
+  }
+
+  if (code.includes('email-already-in-use') || rawMsg.includes('email-already-in-use')) {
+    return mode === 'LOGIN'
+      ? 'Wrong password! Please enter the correct password for this registered account.'
+      : 'This email is already registered. Please switch to "Sign In" and enter your password.';
+  }
+
+  if (code.includes('weak-password') || rawMsg.includes('weak-password')) {
+    return 'Password is too weak. Please enter at least 6 characters.';
+  }
+
+  if (code.includes('invalid-email') || rawMsg.includes('invalid-email')) {
+    return 'Invalid email format. Please enter a valid email address.';
+  }
+
+  if (code.includes('too-many-requests') || rawMsg.includes('too-many-requests')) {
+    return 'Too many failed attempts. Please wait a moment or use "Forgot Password" with OTP.';
+  }
+
+  if (code.includes('popup-closed-by-user') || rawMsg.includes('popup-closed-by-user')) {
+    return 'Sign-in window was closed before completing authentication.';
+  }
+
+  if (code.includes('popup-blocked') || rawMsg.includes('popup-blocked')) {
+    return 'Sign-in popup was blocked by your browser. Please sign in using your email and password.';
+  }
+
+  if (code.includes('network-request-failed') || rawMsg.includes('network-request-failed')) {
+    return 'Network connection error. Please check your internet connection and try again.';
+  }
+
+  return mode === 'LOGIN'
+    ? 'Wrong email or password! Please verify your credentials and try again.'
+    : 'Authentication could not be completed. Please check your details and try again.';
+}
+
 interface AuthContextType {
   currentUser: FirebaseUser | null;
   userProfile: UserProfile | null;
@@ -362,13 +422,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       } else {
         setCurrentUser(null);
-        // Check if there is an active institutional session in localStorage
+        // Only restore an active session if the user has a verified stored password credential
         try {
           const savedSession = localStorage.getItem(ACTIVE_SESSION_KEY);
           if (savedSession) {
             const parsed = JSON.parse(savedSession) as UserProfile;
-            setUserProfile(parsed);
-            setIsEmailVerified(true);
+            const hasVerifiedCredential = parsed?.email && Boolean(getSavedPasswordByEmail(parsed.email));
+            if (hasVerifiedCredential) {
+              setUserProfile(parsed);
+              setIsEmailVerified(true);
+            } else {
+              localStorage.removeItem(ACTIVE_SESSION_KEY);
+              setUserProfile(null);
+            }
           } else {
             setUserProfile(null);
           }
@@ -397,18 +463,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       provider.setCustomParameters({ prompt: 'select_account' });
       const res = await signInWithPopup(auth, provider);
       setCurrentUser(res.user);
+      if (res.user.email) {
+        saveCredentialsLocally(res.user.email, `google-oauth-${res.user.uid}`);
+      }
       await syncUserProfile(res.user, preferredRole);
     } catch (err: any) {
-      console.error('Google Sign-In error:', err);
-      if (err.code === 'auth/popup-closed-by-user') {
-        throw new Error('Google Sign-In window was closed before completing authentication.');
-      }
-      if (err.code === 'auth/popup-blocked') {
-        throw new Error(
-          'Popup was blocked by your browser. Please allow popups or sign in using your email and password above.'
-        );
-      }
-      throw new Error(err.message || 'Google Sign-In failed. Please use email and password.');
+      throw new Error(formatFriendlyAuthError(err, 'GOOGLE'));
     } finally {
       isAuthActionInProgressRef.current = false;
     }
@@ -428,37 +488,52 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     if (!password || password.length < 6) {
-      throw new Error('Please enter a valid password (minimum 6 characters).');
+      throw new Error('Wrong password! Please enter a valid password (minimum 6 characters).');
     }
 
     isAuthActionInProgressRef.current = true;
     try {
-      // 1. Check if password is saved locally or on backend and verify it strictly
+      // 1. Check local credential registry first: if a password is saved locally and doesn't match, reject immediately!
       const savedLocalPassword = getSavedPasswordByEmail(cleanEmail);
+      const localProfile = getSavedProfileByEmail(cleanEmail);
+
       if (savedLocalPassword && savedLocalPassword !== password) {
-        throw new Error('Incorrect password. Please check your password and try again.');
+        throw new Error('Wrong password! Please enter the correct password and try again.');
       }
 
-      // 2. Check backend auth endpoint if available
-      let backendUser: UserProfile | null = null;
+      // 2. Check backend auth endpoint
+      let backendAuthenticatedUser: UserProfile | null = null;
+      let backendUserNotFound = false;
+
       try {
         const res = await fetch('/api/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email: cleanEmail, password }),
         });
+
         if (res.status === 401) {
           const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.error || 'Incorrect password. Please verify your credentials.');
+          throw new Error(
+            errData.error || 'Wrong password! Please enter the correct password and try again.'
+          );
         }
-        if (res.ok) {
+
+        if (res.status === 404) {
+          backendUserNotFound = true;
+        } else if (res.ok) {
           const data = await res.json();
           if (data?.user) {
-            backendUser = data.user as UserProfile;
+            backendAuthenticatedUser = data.user as UserProfile;
           }
         }
       } catch (backendErr: any) {
-        if (backendErr.message && backendErr.message.includes('Incorrect password')) {
+        if (
+          backendErr.message &&
+          (backendErr.message.includes('Wrong password') ||
+            backendErr.message.includes('Incorrect password') ||
+            backendErr.message.includes('password not set'))
+        ) {
           throw backendErr;
         }
       }
@@ -471,92 +546,67 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await syncUserProfile(userCredential.user, preferredRole);
         return;
       } catch (signInErr: any) {
-        const code = signInErr?.code || '';
+        const code = String(signInErr?.code || '');
 
-        if (code === 'auth/wrong-password' && !savedLocalPassword && !backendUser) {
-          throw new Error('Incorrect password. Please verify your password and try again.');
-        }
+        // ONLY allow fallback session if the password was explicitly verified against savedLocalPassword or backendAuthenticatedUser!
+        const isPasswordExplicitlyVerified =
+          (Boolean(savedLocalPassword) && savedLocalPassword === password) ||
+          Boolean(backendAuthenticatedUser);
 
-        // Check if this user has registered in local directory or backend
-        const existingProfile = backendUser || getSavedProfileByEmail(cleanEmail);
-
-        if (!existingProfile && cleanEmail !== BOOTSTRAP_ADMIN_EMAIL.toLowerCase()) {
-          // If Firebase says invalid-credential, distinguish between unregistered user vs wrong password
-          if (
-            code === 'auth/user-not-found' ||
-            code === 'auth/invalid-credential' ||
-            code === 'auth/invalid-login-credentials'
-          ) {
-            throw new Error(
-              'Account not found or invalid password. New college members must click "Register College Account" to register their details first.'
-            );
-          }
-        }
-
-        if (existingProfile) {
-          // Verify password if stored
-          if (savedLocalPassword && savedLocalPassword !== password) {
-            throw new Error('Incorrect password. Please verify your password and try again.');
-          }
-
-          // Try creating the Firebase Auth user if it wasn't created in Firebase yet (e.g. Admin enrolled them)
-          try {
-            const createCred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
-            setCurrentUser(createCred.user);
-            saveCredentialsLocally(cleanEmail, password);
-            await syncUserProfile(createCred.user, preferredRole || existingProfile.role);
-            return;
-          } catch (createErr: any) {
-            if (createErr?.code === 'auth/email-already-in-use') {
-              // Email exists in Firebase Auth, which means the password entered for signInWithEmailAndPassword was wrong!
-              if (!savedLocalPassword) {
-                throw new Error('Incorrect password for this registered @kitsw.ac.in account.');
-              }
+        if (isPasswordExplicitlyVerified) {
+          const verifiedProfile = backendAuthenticatedUser || localProfile;
+          if (verifiedProfile) {
+            // Ensure Firebase Auth user is synced if not yet created in Firebase
+            try {
+              const createCred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+              setCurrentUser(createCred.user);
+              saveCredentialsLocally(cleanEmail, password);
+              await syncUserProfile(createCred.user, preferredRole || verifiedProfile.role);
+              return;
+            } catch {
+              // Complete session ONLY because password matched our verified credential store
+              const merged = sanitizeProfile({
+                ...verifiedProfile,
+                role: preferredRole || verifiedProfile.role,
+                emailVerified: true,
+              });
+              saveProfileLocally(merged, password);
+              setUserProfile(merged);
+              setIsEmailVerified(true);
+              return;
             }
           }
-
-          // Complete session for verified enrolled profile
-          const merged = sanitizeProfile({
-            ...existingProfile,
-            role: preferredRole || existingProfile.role,
-            emailVerified: true,
-          });
-          saveProfileLocally(merged, password);
-          setUserProfile(merged);
-          setIsEmailVerified(true);
-          return;
         }
 
-        // Bootstrap admin fallback
-        if (cleanEmail === BOOTSTRAP_ADMIN_EMAIL.toLowerCase()) {
-          try {
-            const createCred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
-            setCurrentUser(createCred.user);
-            saveCredentialsLocally(cleanEmail, password);
-            await syncUserProfile(createCred.user, 'SUPER_ADMIN');
-            return;
-          } catch {
-            const adminProfile: UserProfile = {
-              uid: `admin-${Date.now()}`,
-              email: cleanEmail,
-              displayName: 'Principal / System Administrator',
-              role: 'SUPER_ADMIN',
-              departmentName: 'Principal Office & Central Administration',
-              emailVerified: true,
-              createdAt: new Date().toISOString(),
-            };
-            saveProfileLocally(adminProfile, password);
-            setUserProfile(adminProfile);
-            setIsEmailVerified(true);
-            return;
+        // If the profile exists in local directory (e.g. demo or enrolled without password), or exists in Firebase, do NOT let them in without a verified password!
+        if (
+          code === 'auth/wrong-password' ||
+          code === 'auth/invalid-credential' ||
+          code === 'auth/invalid-login-credentials'
+        ) {
+          if (localProfile && !savedLocalPassword && backendUserNotFound) {
+            throw new Error(
+              'Account password not set or wrong password! Please click "Register Account" to set your password or use "Forgot Password" with OTP.'
+            );
           }
+          if (!localProfile && backendUserNotFound) {
+            throw new Error(
+              'Wrong email or password! If you have not registered yet, please click "Register Account" first.'
+            );
+          }
+          throw new Error('Wrong password! Please check your password and try again.');
         }
 
-        throw new Error(
-          signInErr?.message ||
-            'Invalid institutional credentials. Please register your college account first or verify your password.'
-        );
+        if (code === 'auth/user-not-found') {
+          throw new Error(
+            'Account not found for this email. Please click "Register Account" to create your account first.'
+          );
+        }
+
+        throw new Error(formatFriendlyAuthError(signInErr, 'LOGIN'));
       }
+    } catch (err: any) {
+      throw new Error(formatFriendlyAuthError(err, 'LOGIN'));
     } finally {
       isAuthActionInProgressRef.current = false;
     }
@@ -661,9 +711,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             fbUser = signInCred.user;
           } catch {
             throw new Error(
-              'An account with this @kitsw.ac.in email already exists. Please switch to Sign In and enter your registered password.'
+              'An account with this email already exists and the password entered does not match. Please switch to "Sign In" and enter your registered password.'
             );
           }
+        } else {
+          throw new Error(formatFriendlyAuthError(createErr, 'REGISTER'));
         }
       }
 
@@ -716,6 +768,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       saveProfileLocally(cleanProfile, password);
       setUserProfile(cleanProfile);
       setIsEmailVerified(true);
+    } catch (err: any) {
+      throw new Error(formatFriendlyAuthError(err, 'REGISTER'));
     } finally {
       isAuthActionInProgressRef.current = false;
     }

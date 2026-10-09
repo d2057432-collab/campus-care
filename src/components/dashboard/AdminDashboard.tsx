@@ -75,6 +75,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [isEnrollModalOpen, setIsEnrollModalOpen] = useState(false);
   const [enrollName, setEnrollName] = useState('');
   const [enrollEmail, setEnrollEmail] = useState('');
+  const [enrollPassword, setEnrollPassword] = useState('kitsw123');
   const [enrollRole, setEnrollRole] = useState<UserRole>('STUDENT');
   const [enrollRollOrEmpId, setEnrollRollOrEmpId] = useState('');
   const [enrollYear, setEnrollYear] = useState('III Year B.Tech');
@@ -200,15 +201,27 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         createdAt: new Date().toISOString(),
       };
 
-      // Save in local directory cache and state immediately
+      // Save in local directory cache and credential store immediately
+      const memberPassword = enrollPassword.trim() || 'kitsw123';
       try {
         const raw = localStorage.getItem('kitsw_users_directory');
         const map: Record<string, UserProfile> = raw ? JSON.parse(raw) : {};
         map[cleanEmail] = newMember;
         localStorage.setItem('kitsw_users_directory', JSON.stringify(map));
+
+        const rawCreds = localStorage.getItem('kitsw_users_credentials');
+        const credsMap: Record<string, string> = rawCreds ? JSON.parse(rawCreds) : {};
+        credsMap[cleanEmail] = memberPassword;
+        localStorage.setItem('kitsw_users_credentials', JSON.stringify(credsMap));
       } catch {
         // Ignore storage error
       }
+      fetch('/api/users/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: newMember, password: memberPassword }),
+      }).catch(() => {});
+
       setUsersList((prev) => [
         newMember,
         ...prev.filter((u) => u.email.toLowerCase() !== cleanEmail),
@@ -1522,17 +1535,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div>
                       <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                        Official Email (@kitsw.ac.in) *
+                        {enrollRole === 'STUDENT' ? 'Student Email (@kitsw.ac.in) *' : 'Staff / Admin Email *'}
                       </label>
                       <input
                         type="email"
                         required
                         value={enrollEmail}
                         onChange={(e) => setEnrollEmail(e.target.value)}
-                        placeholder="member@kitsw.ac.in"
+                        placeholder={enrollRole === 'STUDENT' ? 'student@kitsw.ac.in' : 'faculty@gmail.com'}
+                        className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                        Initial Login Password *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        minLength={6}
+                        value={enrollPassword}
+                        onChange={(e) => setEnrollPassword(e.target.value)}
+                        placeholder="Min 6 chars"
                         className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
                       />
                     </div>
